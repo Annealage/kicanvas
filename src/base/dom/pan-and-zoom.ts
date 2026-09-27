@@ -208,18 +208,24 @@ export class PanAndZoom {
     }
 
     #handle_zoom(delta: number, mouse?: Vec2) {
+        // The world point under the mouse must stay under it, so note it
+        // before the zoom changes.
+        const mouse_world =
+            mouse != null ? this.camera.screen_to_world(mouse) : null;
+
         this.camera.zoom *= Math.exp(delta * -zoom_speed);
         this.camera.zoom = Math.min(
             this.max_zoom,
             Math.max(this.camera.zoom, this.min_zoom),
         );
 
-        if (mouse != null) {
-            const mouse_world = this.camera.screen_to_world(mouse);
+        if (mouse != null && mouse_world != null) {
             const new_world = this.camera.screen_to_world(mouse);
-            const center_delta = mouse_world.sub(new_world);
-
-            this.camera.translate(center_delta);
+            // Move the centre in world space: translate() mirrors x when the
+            // camera is flipped, which is right for pans but not here.
+            this.camera.center.set(
+                this.camera.center.add(mouse_world.sub(new_world)),
+            );
         }
 
         if (this.callback) {

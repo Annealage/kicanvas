@@ -98,6 +98,8 @@ export class WebGL2Renderer extends Renderer {
         // Update canvas size and projection matrix if needed
         this.update_canvas_size();
 
+        // The theme sets background_color after setup(), so apply it here.
+        this.gl.clearColor(...this.background_color.to_array());
         this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
     }
 
@@ -207,6 +209,7 @@ class WebGL2RenderLayer extends RenderLayer {
 
     override dispose(): void {
         this.clear();
+        super.dispose();
     }
 
     clear() {
