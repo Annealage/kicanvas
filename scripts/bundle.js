@@ -24,6 +24,7 @@ export async function bundle(options = {}) {
             ".css": "text",
             ".svg": "text",
             ".kicad_wks": "text",
+            ".woff2": "binary",
         },
         define: {
             DEBUG: "false",

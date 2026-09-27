@@ -25,6 +25,9 @@ import {
 import type { KCBoardAppElement } from "./kc-board/app";
 import type { KCSchematicAppElement } from "./kc-schematic/app";
 
+// Registers the bundled UI fonts (no Google Fonts request).
+import "./fonts";
+
 const log = new Logger("kicanvas:embedtag");
 
 /**
@@ -322,13 +325,3 @@ class KiCanvasSourceElement extends CustomElement {
 }
 
 window.customElements.define("kicanvas-source", KiCanvasSourceElement);
-
-/* Import required fonts.
- * TODO: Package these up as part of KiCanvas
- */
-document.body.appendChild(
-    html`<link
-        rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@48,400,0,0&family=Nunito:wght@300;400;500;600;700&display=swap"
-        crossorigin="anonymous" />`,
-);
