@@ -19,6 +19,9 @@ export default {
     plugins: [
         esbuildPlugin({
             ts: true,
+            // Compile tests as the build does: experimental decorators and
+            // assigned (not defined) class fields, which the viewers rely on.
+            tsconfig: "tsconfig.json",
             loaders: {
                 ".js": "ts",
                 ".glsl": "text",

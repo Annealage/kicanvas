@@ -38,7 +38,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             ordinal: 0,
             canonical_name: "F.Cu",
             type: "signal",
-            user_name: undefined,
         });
         assert.deepInclude(pcb.layers[2], {
             ordinal: 32,
@@ -50,7 +49,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             ordinal: 58,
             canonical_name: "User.9",
             type: "user",
-            user_name: undefined,
         });
 
         assert.equal(pcb.setup?.pad_to_mask_clearance, 0);
@@ -237,7 +235,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             effects: {
                 hide: false,
                 font: {
-                    face: undefined,
                     size: { x: 1, y: 1 },
                     thickness: 0.25,
                     italic: false,
@@ -259,7 +256,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             effects: {
                 hide: false,
                 font: {
-                    face: undefined,
                     size: { x: 1, y: 1 },
                     thickness: 0.25,
                     italic: true,
@@ -281,7 +277,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             effects: {
                 hide: false,
                 font: {
-                    face: undefined,
                     size: { x: 1, y: 1 },
                     thickness: 0.25,
                     italic: true,
@@ -303,7 +298,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             effects: {
                 hide: false,
                 font: {
-                    face: undefined,
                     size: { x: 1, y: 1 },
                     thickness: 0.25,
                     italic: false,
@@ -460,7 +454,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
                 extension_height: 0.58642,
                 extension_offset: 1,
                 keep_text_aligned: true,
-                text_frame: undefined,
             },
         } as any);
 
@@ -470,7 +463,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
             layer: { name: "F.Cu" },
             effects: {
                 font: {
-                    face: undefined,
                     size: { x: 2, y: 2 },
                     thickness: 0.5,
                     bold: false,
@@ -494,8 +486,6 @@ suite("kicad.board.KicadPCB(): board parsing", function () {
                 text_position_mode: 0,
                 extension_offset: 0.5,
                 text_frame: 0,
-                keep_text_aligned: undefined,
-                extension_height: undefined,
             },
         } as any);
 
@@ -729,7 +719,6 @@ suite("kicad.board.Footprint()", function () {
             layer: { name: "F.SilkS" },
             effects: {
                 font: {
-                    face: undefined,
                     size: { x: 1, y: 1 },
                     thickness: 0.15,
                     italic: false,
@@ -753,7 +742,6 @@ suite("kicad.board.Footprint()", function () {
             layer: { name: "F.SilkS" },
             effects: {
                 font: {
-                    face: undefined,
                     size: { x: 1.5, y: 1.5 },
                     thickness: 0.2,
                     italic: true,
@@ -777,7 +765,6 @@ suite("kicad.board.Footprint()", function () {
             layer: { name: "F.SilkS" },
             effects: {
                 font: {
-                    face: undefined,
                     size: { x: 1.5, y: 1.5 },
                     thickness: 0.2,
                     italic: false,
@@ -1096,7 +1083,6 @@ suite("kicad.board.Footprint()", function () {
             layer: "F.SilkS",
             effects: {
                 font: {
-                    face: undefined,
                     size: { x: 1, y: 1 },
                     thickness: 0.15,
                     italic: false,

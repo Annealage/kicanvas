@@ -119,6 +119,14 @@ export class ViewLayer implements IDisposable {
         this.#visible = v;
     }
 
+    /**
+     * The raw visibility: a boolean or the function evaluated on each read of
+     * `visible`. Lets callers compose an extra condition onto a layer's own.
+     */
+    get visibility(): VisibilityType {
+        return this.#visible;
+    }
+
     /** The overall bounding box of all items on this layer */
     get bbox() {
         return BBox.combine(this.bboxes.values());
