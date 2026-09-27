@@ -46,12 +46,14 @@ export enum LayerNames {
     via_holewalls = ":Via:HoleWalls",
     pads_front_netname = ":Pads:Front:NetName",
     pads_front = ":Pads:Front",
+    // Silkscreen and courtyard sit above their side's copper (and its zones)
+    // so references and outlines stay legible over pours.
+    f_silks = "F.SilkS",
+    f_crtyd = "F.CrtYd",
     f_cu = "F.Cu",
     f_mask = "F.Mask",
-    f_silks = "F.SilkS",
     f_adhes = "F.Adhes",
     f_paste = "F.Paste",
-    f_crtyd = "F.CrtYd",
     f_fab = "F.Fab",
     in1_cu = "In1.Cu",
     in2_cu = "In2.Cu",
@@ -85,12 +87,12 @@ export enum LayerNames {
     in30_cu = "In30.Cu",
     pads_back_netname = ":Pads:Back:NetName",
     pads_back = ":Pads:Back",
+    b_silks = "B.SilkS",
+    b_crtyd = "B.CrtYd",
     b_cu = "B.Cu",
     b_mask = "B.Mask",
-    b_silks = "B.SilkS",
     b_adhes = "B.Adhes",
     b_paste = "B.Paste",
-    b_crtyd = "B.CrtYd",
     b_fab = "B.Fab",
     drawing_sheet = BaseLayerNames.drawing_sheet,
     grid = BaseLayerNames.grid,
@@ -315,7 +317,9 @@ export class LayerSet extends BaseLayerSet {
                         ),
                         () => this.by_name(layer_name)!.visible,
                         false,
-                        this.color_for(layer_name),
+                        this.color_for(layer_name).with_alpha(
+                            this.theme.zone_opacity ?? 1,
+                        ),
                     ),
                 );
             }
@@ -382,7 +386,7 @@ export class LayerSet extends BaseLayerSet {
             );
         }
 
-        type KeyType = keyof Omit<BoardTheme, "copper">;
+        type KeyType = keyof Omit<BoardTheme, "copper" | "zone_opacity">;
 
         return this.theme[name as KeyType] ?? Color.white;
     }

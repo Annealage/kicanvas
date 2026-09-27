@@ -101,6 +101,8 @@ export interface BoardTheme extends BaseTheme {
     via_micro: Color;
     via_through: Color;
     worksheet: Color;
+    /** Alpha for filled zones (0..1), so tracks and inner layers show through. Default 1. */
+    zone_opacity?: number;
 }
 
 export interface SchematicTheme extends BaseTheme {
