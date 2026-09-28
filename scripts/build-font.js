@@ -5,86 +5,133 @@
 */
 
 /**
- * Transforms KiCad's newstroke font into a format KiCanvas can use.
+ * Builds src/kicad/text/newstroke-glyphs.ts from the Newstroke font sources
+ * in third_party/newstroke.
  *
- * Newstroke is distributed as a .cpp file and a old-format KiCad library,
- * this script transforms it into a .ts file so it can be easily imported
- * into KiCanvas
+ * Newstroke's glyphs are drawn as symbols in its author's KiCad libraries and
+ * indexed by charlist.txt. The author's own compiler, fontconv.awk, turns them
+ * into one encoded string per code point starting at U+0020 (the encoding is
+ * described in src/kicad/text/stroke-font.ts). This script runs it, keeps the
+ * code points the viewer bundles and writes them out as TypeScript.
  *
- * Note: Newstroke is *huge*, nearly 3MB! This is massive compared to the rest
- * of KiCanvas, so we have to do some optimization. The vast bulk of Newstroke
- * is the extended CJK character set (Unicode 0x4E00-0x9FFF). There aren't a lot
- * of open source schematics/boards that use those characters so this script
- * removes them, reducing the size from ~3MB to ~200kB. In the future, it
- * should be possible to separately load those symbols when needed.
- *
+ * Requires awk.
  */
 
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 
-const INFILE = "./third_party/newstroke/newstroke_font.cpp";
+const SOURCE_DIR = "./third_party/newstroke";
 const OUTFILE = "./src/kicad/text/newstroke-glyphs.ts";
 
-let src = await fs.readFile(INFILE, {
-    encoding: "utf-8",
-});
+// charlist.txt pulls glyphs from all of these. Order matters where a name is
+// defined twice: SLASH_SMALL is in both symbol.lib and font.lib, and the later
+// definition wins, as in the command line in the sources' README.txt.
+const LIBRARIES = [
+    "symbol.lib",
+    "font.lib",
+    "CJK_symbol.lib",
+    "hiragana.lib",
+    "katakana.lib",
+    "half_full.lib",
+    "CKJ_wide.lib",
+];
 
-const first_bracket = src.indexOf("{");
+const FIRST_CODE_POINT = 0x20;
 
-const preamble = `/* Generated from third-party ${INFILE} for KiCanvas.\nSee below for original license. */`;
-const license_str = src.slice(0, src.lastIndexOf("*/", first_bracket) + 2);
-const glyph_array_str = src.slice(first_bracket + 1, src.lastIndexOf("}") - 1);
+// The bulk of Newstroke is the ~21,000 CJK Unified Ideographs from U+4E00,
+// nearly 3 MB of strings that few schematics or boards need, so they're left
+// out. The bundled range has always ended at U+4E1F, 32 code points into that
+// block, and is kept as it was.
+const LAST_CODE_POINT = 0x4e1f;
 
-const all_glyphs = eval(`[${glyph_array_str}]`);
-// Note: This is where the CJK characters are excluded.
-const glyphs = all_glyphs.slice(0, 0x4e00);
-const excluded_count = all_glyphs.length - glyphs.length;
-const glyph_set = new Set(glyphs);
-const glyph_map = new Map();
+// Glyphs KiCad draws differently from the Newstroke sources, as vertical
+// shifts in font units (positive is down).
+//
+// U+007E TILDE: the source draws it at cap height (19-21 units above the
+// baseline). kicad-cli 9 draws it 8-10 units above the baseline: measured from
+// `pcb export svg` of "~" at 2.1 mm, where one font unit is 0.1 mm.
+const VERTICAL_SHIFTS = new Map([[0x7e, 11]]);
 
+const awk_output = execFileSync(
+    "awk",
+    ["-f", "fontconv.awk", ...LIBRARIES, "charlist.txt"],
+    { cwd: SOURCE_DIR, encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 },
+);
+
+// fontconv.awk prints each glyph as a C string literal on its own line,
+// escaping backslashes and quotes.
+const all_glyphs = [];
+for (const [, literal] of awk_output.matchAll(/^\s*"((?:[^"\\]|\\.)*)",/gm)) {
+    all_glyphs.push(literal.replace(/\\(.)/g, "$1"));
+}
+
+const glyphs = all_glyphs.slice(0, LAST_CODE_POINT - FIRST_CODE_POINT + 1);
+if (glyphs.length != LAST_CODE_POINT - FIRST_CODE_POINT + 1) {
+    throw new Error(`fontconv.awk produced only ${all_glyphs.length} glyphs`);
+}
+
+for (const [code_point, shift] of VERTICAL_SHIFTS) {
+    glyphs[code_point - FIRST_CODE_POINT] = shift_glyph(
+        glyphs[code_point - FIRST_CODE_POINT],
+        shift,
+    );
+}
+
+/**
+ * Moves every point of an encoded glyph down by `units`. The first two
+ * characters are the horizontal metrics, then come (x, y) character pairs,
+ * with " R" lifting the pen.
+ */
+function shift_glyph(glyph, units) {
+    let out = glyph.slice(0, 2);
+    for (let i = 2; i < glyph.length; i += 2) {
+        const pair = glyph.slice(i, i + 2);
+        out +=
+            pair == " R"
+                ? pair
+                : pair[0] + String.fromCharCode(pair.charCodeAt(1) + units);
+    }
+    return out;
+}
+
+// Many code points share a glyph (mostly the placeholder for undrawn ones), so
+// strings used more than twice are stored once and referenced by index.
+const counts = new Map();
 for (const glyph of glyphs) {
-    const count = glyph_map.get(glyph) ?? 0;
-    glyph_map.set(glyph, count + 1);
+    counts.set(glyph, (counts.get(glyph) ?? 0) + 1);
 }
-
-const repeated_glyphs = new Map();
-const repeated_glyph_defs = [];
-
-let unique_index = 0;
-for (const [glyph, count] of glyph_map) {
-    if (count > 2) {
-        repeated_glyphs.set(glyph, unique_index);
-        repeated_glyph_defs.push(`${JSON.stringify(glyph)}`);
-        unique_index++;
-    }
-}
-
-const repeated_glyphs_def_str = repeated_glyph_defs.join(", ");
-
-const out_glyphs = glyphs.map((glyph, index) => {
-    if (repeated_glyphs.has(glyph)) {
-        return repeated_glyphs.get(glyph);
-    } else {
-        return JSON.stringify(glyph);
-    }
-});
-
-const out_glyph_array_str = out_glyphs.join(",\n");
-
-console.log(
-    `${glyphs.length} total glyphs, ${glyph_set.size} unique, ${excluded_count} excluded`,
+const shared = [...counts].filter(([, n]) => n > 2).map(([glyph]) => glyph);
+const shared_index = new Map(shared.map((glyph, i) => [glyph, i]));
+const entries = glyphs.map((glyph) =>
+    shared_index.has(glyph) ? shared_index.get(glyph) : JSON.stringify(glyph),
 );
 
-const code = `export const shared_glyphs = [${repeated_glyphs_def_str}];\n\nexport const glyph_data: (string|number|undefined)[]  = [${out_glyph_array_str}\n];\n`;
-const header = `${preamble}\n\n${license_str}`;
-const output = `${header}\n\n${code}\n`;
+const header = `/*
+    Generated by scripts/build-font.js from the Newstroke font sources in
+    third_party/newstroke. Do not edit.
 
-console.log(
-    `Output file size: ${Math.round(
-        output.length / 1024,
-    )} kilobytes with ${Math.round(header.length / 1024)} kilobytes overhead`,
-);
+    Newstroke is by Vladimir Uryvaev, released under Creative Commons CC0 1.0
+    (https://creativecommons.org/publicdomain/zero/1.0/); see
+    third_party/newstroke/README.txt.
 
+    The glyphs from U+3000 on come from the CJK libraries KiCad contributors
+    added to those sources. Its ideographs were made with Lingdong Huang's
+    chinese-hershey-font (MIT License) from Adobe's Source Han Sans (SIL Open
+    Font License 1.1). See LICENSE.md.
+*/`;
+
+const code = `export const first_code_point = ${FIRST_CODE_POINT};
+
+export const shared_glyphs: string[] = [${shared.map((g) => JSON.stringify(g)).join(", ")}];
+
+/** One entry per code point from first_code_point: an encoded glyph, or an index into shared_glyphs. */
+export const glyph_data: (string | number)[] = [${entries.join(",\n")}
+];
+`;
+
+const output = `${header}\n\n${code}`;
 await fs.writeFile(OUTFILE, output, "utf8");
 
-console.log(`Wrote glyph data to ${OUTFILE}`);
+console.log(
+    `Wrote ${glyphs.length} glyphs (${shared.length} shared, U+${FIRST_CODE_POINT.toString(16).toUpperCase().padStart(4, "0")}-U+${LAST_CODE_POINT.toString(16).toUpperCase()}) to ${OUTFILE}, ${Math.round(output.length / 1024)} kB`,
+);

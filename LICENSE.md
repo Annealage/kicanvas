@@ -33,7 +33,7 @@ This project contains copies or makes use of other works. These works and their 
 license and terms are:
 
 - Earcut by Mapbox, licensed under the ISC license. Retrived from https://github.com/mapbox/earcut.
-- Newstroke by Vladimir Uryvaev, Lingdong Huang, Adobe, and KiCad contributors. Originally licensed under Creative Commons CC0 1.0, amended with an MIT-like license, and utilizes glyphs that are licensed under the SIL Open Font License Version 1.1.
+- Newstroke by Vladimir Uryvaev, licensed under Creative Commons CC0 1.0. Retrieved from https://vovanium.ru/sledy/newstroke/en; the sources are in third_party/newstroke. Its CJK libraries were added by KiCad contributors; their ideographs come from Lingdong Huang's chinese-hershey-font (MIT License, https://github.com/LingDong-/chinese-hershey-font), traced from Adobe's Source Han Sans (SIL Open Font License 1.1, https://github.com/adobe-fonts/source-han-sans). src/kicad/text/newstroke-glyphs.ts is generated from these sources by scripts/build-font.js.
 - Material Symbols by Google, licensed under the Apache License, Version 2.0. Retrieved from https://github.com/google/material-design-icons. A subset is bundled from third_party/fonts (license: third_party/fonts/MaterialSymbols-LICENSE.txt).
 - Nunito by Vernon Adams, Manvel Shmavonyan, licensed under the Open Font License. Retrieved from https://fonts.google.com/specimen/Nunito/about. The latin subset is bundled from third_party/fonts (license: third_party/fonts/Nunito-OFL.txt).
 - Bellota by Kemie Guaida, licensed under the Open Font License. Retrieved from https://fonts.google.com/specimen/Bellota/about

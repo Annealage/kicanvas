@@ -5,20 +5,32 @@
 */
 
 /**
- * KiCad text markup parser
+ * KiCad's text markup: ^{superscript}, _{subscript} and ~{overbar}, which
+ * nest.
  *
- * KiCad uses basic text markup to express subscript, superscript, and overbar
- * text. For example "normal ^{superscript} _{subscript} ~{overbar}".
+ * What counts as markup, as kicad-cli 9 draws it:
+ *
+ * - An opener only takes effect if a closing brace matches it. Braces pair up
+ *   like brackets, literal ones included: in "~{a{b}c}" the overbar covers
+ *   "a{b}c". An unmatched opener, like an unmatched "}", is drawn as-is, and
+ *   markup inside it still applies ("~{a^{b}" is "~{a" then a superscript b).
+ * - "~" is only markup before "{": "~~{a}" is a tilde then an overlined a.
+ * - Empty markup ("x_{}y", "~{}") draws nothing, not even an overbar.
  */
 export class Markup {
     root: MarkupNode;
 
     constructor(public text: string) {
-        this.root = parse(tokenize(text));
+        this.root = new MarkupNode();
         this.root.is_root = true;
+        this.root.children = parse(text, closing_braces(text), 0, text.length);
     }
 }
 
+/**
+ * A node is either a run of plain text (`text`, no children) or a markup
+ * group whose flags apply to its `children`.
+ */
 export class MarkupNode {
     is_root = false;
     subscript = false;
@@ -28,86 +40,61 @@ export class MarkupNode {
     children: MarkupNode[] = [];
 }
 
-type Token = {
-    text?: string;
-    open?: number;
-    close?: number;
-    control?: "^" | "_" | "~";
-};
+const openers = {
+    "^": "superscript",
+    _: "subscript",
+    "~": "overbar",
+} as const;
 
-function* tokenize(str: string): Generator<Token> {
-    const EOF = "\x04";
-    let start_idx = 0;
-    let control_char = null;
-    let bracket_count = 0;
-
-    for (let i = 0; i < str.length + 1; i++) {
-        const c = i < str.length ? str[i] : EOF;
-        switch (c) {
-            case "_":
-            case "^":
-            case "~":
-                control_char = c;
-                break;
-            case "{":
-                if (control_char) {
-                    bracket_count++;
-                    yield { text: str.slice(start_idx, i - 1) };
-                    yield { open: bracket_count, control: control_char };
-                    control_char = null;
-                    start_idx = i + 1;
-                }
-                break;
-            case "}":
-                if (bracket_count) {
-                    yield { text: str.slice(start_idx, i) };
-                    yield { close: bracket_count };
-                    start_idx = i + 1;
-                    bracket_count--;
-                }
-                break;
-            case EOF:
-                yield { text: str.slice(start_idx, i) };
-                break;
-            default:
-                control_char = null;
-                break;
+/** Maps the index of each "{" to the index of the "}" that closes it. */
+function closing_braces(text: string) {
+    const closes = new Map<number, number>();
+    const open: number[] = [];
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] == "{") {
+            open.push(i);
+        } else if (text[i] == "}" && open.length) {
+            closes.set(open.pop()!, i);
         }
     }
+    return closes;
 }
 
-function parse(tokens: Generator<Token>): MarkupNode {
-    let token;
+function parse(
+    text: string,
+    closes: Map<number, number>,
+    start: number,
+    end: number,
+): MarkupNode[] {
+    const nodes: MarkupNode[] = [];
+    let run = "";
 
-    const node = new MarkupNode();
+    const end_run = () => {
+        if (run) {
+            const node = new MarkupNode();
+            node.text = run;
+            nodes.push(node);
+            run = "";
+        }
+    };
 
-    while ((token = tokens.next().value)) {
-        if (token.text) {
-            const c = new MarkupNode();
-            c.text = token.text;
-            node.children.push(c);
-            continue;
-        }
-        if (token.open) {
-            const c = parse(tokens);
-            switch (token.control) {
-                case "^":
-                    c.superscript = true;
-                    break;
-                case "_":
-                    c.subscript = true;
-                    break;
-                case "~":
-                    c.overbar = true;
-                    break;
-            }
-            node.children.push(c);
-            continue;
-        }
-        if (token.close) {
-            return node;
+    let i = start;
+    while (i < end) {
+        const c = text[i]!;
+        const close = closes.get(i + 1);
+        if (c in openers && text[i + 1] == "{" && close !== undefined) {
+            end_run();
+            const node = new MarkupNode();
+            node[openers[c as keyof typeof openers]] = true;
+            node.children = parse(text, closes, i + 2, close);
+            nodes.push(node);
+            i = close + 1;
+        } else {
+            run += c;
+            i++;
         }
     }
 
-    return node;
+    end_run();
+    return nodes;
 }

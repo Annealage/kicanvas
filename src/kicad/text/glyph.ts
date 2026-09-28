@@ -7,12 +7,21 @@
 import { Angle, BBox, Vec2 } from "../../base/math";
 
 /**
- * Glyph abstract base class
- *
- * Shared between stroke and outline fonts, although outline fonts aren't
- * currently implemented.
+ * A glyph placed in text: its shape plus the box it advances the pen by.
  */
 export abstract class Glyph {
+    /** The advance box: x from 0 to the advance width, y from the glyph's top to its baseline. */
+    abstract get bbox(): BBox;
+
+    /**
+     * Places the glyph.
+     *
+     * @param glyph_size - width and height of the glyph (the text size)
+     * @param offset - where the start of the advance box sits on the baseline
+     * @param tilt - italic slant, as x shift per unit of height
+     * @param angle - rotation about `origin`, counter-clockwise on screen
+     * @param mirror - whether to reflect x about `origin`
+     */
     abstract transform(
         glyph_size: Vec2,
         offset: Vec2,
@@ -21,14 +30,13 @@ export abstract class Glyph {
         mirror: boolean,
         origin: Vec2,
     ): Glyph;
-
-    abstract get bbox(): BBox;
 }
 
 type Stroke = Vec2[];
 
 /**
- * Glyphs for stroke fonts.
+ * A glyph drawn as pen strokes, in em units: one unit is the text size, x runs
+ * from the start of the advance box and y from the baseline (negative is up).
  */
 export class StrokeGlyph extends Glyph {
     constructor(
@@ -46,46 +54,39 @@ export class StrokeGlyph extends Glyph {
         mirror: boolean,
         origin: Vec2,
     ): StrokeGlyph {
-        // Note: our bbox calculation differs from KiCad's, however,
-        // when I wrote this it seems to be consistent in terms of final
-        // outcome.
-        const bb = this.bbox.copy();
+        // KiCad slants italics about a line one font unit (1/21 em) above
+        // each glyph's baseline: measured on kicad-cli 9 SVG output, where an
+        // italic "H" stem at 21 mm leans 0.125 mm left at the baseline and
+        // 2.5 mm right at the cap height.
+        const pivot = -glyph_size.y / 21;
+        const cos = Math.cos(angle.radians);
+        const sin = Math.sin(angle.radians);
 
-        bb.x = offset.x + bb.x * glyph_size.x;
-        bb.y = offset.y + bb.y * glyph_size.y;
-        bb.w = bb.w * glyph_size.x;
-        bb.h = bb.h * glyph_size.y;
-
-        if (tilt) {
-            bb.w += bb.h * tilt;
-        }
-
-        const strokes: Stroke[] = [];
-
-        for (const src_stroke of this.strokes) {
-            const points: Vec2[] = [];
-            for (const src_point of src_stroke) {
-                let point = src_point.multiply(glyph_size);
-
-                if (tilt > 0) {
-                    point.x -= point.y * tilt;
-                }
-
-                point = point.add(offset);
-
-                if (mirror) {
-                    point.x = origin.x - (point.x - origin.x);
-                }
-
-                if (angle.degrees != 0) {
-                    point = angle.rotate_point(point, origin);
-                }
-
-                points.push(point);
+        const place = (p: Vec2) => {
+            let x = p.x * glyph_size.x;
+            const y = p.y * glyph_size.y;
+            x -= tilt * (y - pivot);
+            x += offset.x - origin.x;
+            const dy = offset.y + y - origin.y;
+            if (mirror) {
+                x = -x;
             }
-            strokes.push(points);
-        }
+            // Counter-clockwise on screen, where y points down.
+            return new Vec2(
+                origin.x + x * cos + dy * sin,
+                origin.y - x * sin + dy * cos,
+            );
+        };
 
-        return new StrokeGlyph(strokes, bb);
+        const strokes = this.strokes.map((stroke) => stroke.map(place));
+
+        const bbox = new BBox(
+            offset.x + this.bbox.x * glyph_size.x,
+            offset.y + this.bbox.y * glyph_size.y,
+            this.bbox.w * glyph_size.x,
+            this.bbox.h * glyph_size.y,
+        );
+
+        return new StrokeGlyph(strokes, bbox);
     }
 }

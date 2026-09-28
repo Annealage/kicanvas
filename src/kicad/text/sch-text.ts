@@ -9,12 +9,8 @@ import { At } from "../common";
 import { EDAText } from "./eda-text";
 
 /**
- * Represents text objects that belong to the schematic, not to any individual
- * symbol. These are created via the "Text" tool in Eeschema.
- *
- * This class is also used by the LabelPainter and PinPainter, specifically
- * for apply set_spin_style_from_angle. It might be possible to remove this
- * class altogether in favor of just having that method somewhere.
+ * Text placed on a schematic sheet with the Text tool, and the text of labels
+ * and pins, which spin the same way.
  */
 export class SchText extends EDAText {
     constructor(text: string) {
@@ -26,31 +22,19 @@ export class SchText extends EDAText {
         this.set_spin_style_from_angle(this.text_angle);
     }
 
+    /**
+     * Schematic text only ever reads left to right or bottom to top. The
+     * other two directions (180 and 270 degrees) are drawn as those, with the
+     * text right-justified so it still grows away from its anchor the same
+     * way. The text sits on its anchor (bottom-justified).
+     */
     set_spin_style_from_angle(a: Angle) {
-        switch (a.degrees) {
-            default:
-            case 0:
-                // right
-                this.text_angle.degrees = 0;
-                this.h_align = "left";
-                break;
-            case 90:
-                // up
-                this.text_angle.degrees = 90;
-                this.h_align = "left";
-                break;
-            case 180:
-                //left
-                this.text_angle.degrees = 0;
-                this.h_align = "right";
-                break;
-            case 270:
-                // down
-                this.text_angle.degrees = 90;
-                this.h_align = "right";
-                break;
-        }
-
+        const degrees = ((Math.round(a.degrees) % 360) + 360) % 360;
+        const reversed = degrees == 180 || degrees == 270;
+        this.text_angle = Angle.from_degrees(
+            degrees == 90 || degrees == 270 ? 90 : 0,
+        );
+        this.h_align = reversed ? "right" : "left";
         this.v_align = "bottom";
     }
 

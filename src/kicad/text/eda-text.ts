@@ -9,18 +9,11 @@ import { At, Effects } from "../common";
 import { Font, TextAttributes } from "./font";
 import { StrokeFont } from "./stroke-font";
 
-/** Primary text mixin
+/**
+ * A text item, schematic or board: its string, where it's anchored and how
+ * it's drawn.
  *
- * KiCad uses EDA_TEXT as a sort of grab-bag of various things needed to render
- * text across both Eeschema and Pcbnew. There is a lot of meandering code
- * because it has mostly been worked on piecemeal over the years, so there's
- * some stuff that is a little weird and some code that does almost the same
- * thing as other code. I've done my best to keep the structure clean while
- * carefully matching KiCad's behavior, but it's still a lot to wrap your
- * head around.
- *
- * Note: Just like the underlying Font class, this all expects
- * scaled internal units instead of mm!
+ * Lengths are in internal units, 10000 to the millimetre.
  */
 export class EDAText {
     constructor(text: string) {
@@ -28,29 +21,24 @@ export class EDAText {
     }
 
     /**
-     * Apply "effects" parsed from schematic or board files.
-     *
-     * KiCad uses Effects to encapsulate all of the various text
-     * options, this translates it into TextAttributes used by Font.
+     * Takes the size, pen, style, justification and visibility parsed from a
+     * file's (effects ...). The pen width stays 0 when the file gives none;
+     * see get_effective_text_thickness().
      */
     apply_effects(effects: Effects) {
-        this.attributes.h_align = effects.justify.horizontal;
-        this.attributes.v_align = effects.justify.vertical;
-        this.attributes.mirrored = effects.justify.mirror;
-        this.attributes.italic = effects.font.italic;
-        this.attributes.bold = effects.font.bold;
-        this.attributes.size.set(effects.font.size.multiply(10000));
-        this.attributes.stroke_width = (effects.font.thickness ?? 0) * 10000;
-        this.attributes.stroke_width = this.get_effective_text_thickness(1588);
-        this.attributes.color = effects.font.color;
+        const attributes = this.attributes;
+        attributes.size = effects.font.size.multiply(10000);
+        attributes.stroke_width = effects.font.thickness * 10000;
+        attributes.bold = effects.font.bold;
+        attributes.italic = effects.font.italic;
+        attributes.color = effects.font.color;
+        attributes.h_align = effects.justify.horizontal;
+        attributes.v_align = effects.justify.vertical;
+        attributes.mirrored = effects.justify.mirror;
+        attributes.visible = !effects.hide;
     }
 
-    /**
-     * Apply "at" parsed from schematic or board files.
-     *
-     * KiCad uses At to encapsulate both position and rotation. How this is
-     * actually applied various based on the actual text item.
-     */
+    /** Takes the position and rotation parsed from a file's (at ...). */
     apply_at(at: At) {
         this.text_pos = at.position.multiply(10000);
         this.text_angle = Angle.from_degrees(at.rotation);
@@ -60,35 +48,35 @@ export class EDAText {
     text: string;
 
     /** The processed text that will be used for rendering */
-    get shown_text(): string {
+    get shown_text() {
         return this.text;
     }
 
-    /** Effective text width selected either the text thickness specified in
-     * attributes if it's a valid value or the given default value. */
+    /**
+     * The pen width KiCad uses for this text: the one it was given, or for
+     * bold text a fifth of its width, or else `default_thickness`, which
+     * defaults to an eighth of the width. Never more than a quarter of the
+     * text's smaller dimension.
+     *
+     * Measured with kicad-cli 9: bold schematic text without a thickness is
+     * drawn at 1/5 of its width; plain text without one is drawn with the
+     * schematic's default line width but sized for its text box, and wrapped,
+     * with 1/8 of its width.
+     */
     get_effective_text_thickness(default_thickness?: number): number {
-        let thickness = this.text_thickness;
-
-        if (thickness < 1) {
-            thickness = default_thickness ?? 0;
-
-            if (this.bold) {
-                thickness = get_bold_thickness(this.text_width);
-            } else if (thickness <= 1) {
-                thickness = get_normal_thickness(this.text_width);
-            }
+        let pen = this.text_thickness;
+        if (pen <= 0) {
+            pen = this.bold
+                ? this.text_width / 5
+                : (default_thickness ?? this.text_width / 8);
         }
-
-        thickness = clamp_thickness(thickness, this.text_width, true);
-
-        return thickness;
+        return Font.clamp_pen_width(pen, this.text_size);
     }
 
-    public text_pos = new Vec2(0, 0);
+    /** Where the text is anchored. */
+    text_pos: Vec2 = new Vec2(0, 0);
 
-    public attributes = new TextAttributes();
-
-    // Aliases for attributes
+    attributes = new TextAttributes();
 
     get text_angle() {
         return this.attributes.angle;
@@ -162,144 +150,65 @@ export class EDAText {
         return this.attributes.stroke_width;
     }
 
-    /**
-     * Get the bounding box for a line or lines of text.
-     *
-     * Used by .bounding_box in LibText and SchField.
-     *
-     * Note: text is always treated as non-rotated.
-     *
-     * @param line - which line to measure, if null all lines are measured.
-     * @param invert_y - inverts the y axis when calculating the bbox. Used
-     *                   by eeschema for symbol text items.
-     */
-    get_text_box(line?: number, invert_y?: boolean): BBox {
-        const pos = this.text_pos.copy();
-        const bbox = new BBox(0, 0, 0, 0);
-        let strings: string[] = [];
-        let text = this.shown_text;
-        const thickness = this.get_effective_text_thickness();
-
-        if (this.multiline) {
-            strings = text.split("\n");
-
-            if (strings.length) {
-                if (line != undefined && line < strings.length) {
-                    text = strings[line]!;
-                } else {
-                    text = strings[0]!;
-                }
-            }
-        }
-
-        // Calculate the horizontal and vertical size.
-        const font = StrokeFont.default();
-        const font_size = this.text_size.copy();
-        const bold = this.bold;
-        const italic = this.italic;
-        let extents = font.get_line_extents(
-            text,
-            font_size,
-            thickness,
-            bold,
-            italic,
-        );
-        let overbar_offset = 0;
-
-        // Create a bbox for horizontal text that's top and left aligned. It'll
-        // be adjusted later to account for different orientations and alignments.
-        const text_size = extents.copy();
-
-        if (this.multiline && line && line < strings.length) {
-            pos.y -= Math.round(line * font.get_interline(font_size.y));
-        }
-
-        if (text.includes("~{")) {
-            overbar_offset = extents.y / 14;
-        }
-
-        if (invert_y) {
-            pos.y = -pos.y;
-        }
-
-        bbox.start = pos;
-
-        // Merge all bboxes for multiline text where a specific line wasn't
-        // requested.
-        if (this.multiline && !line && strings.length) {
-            for (const line of strings.slice(1)) {
-                extents = font.get_line_extents(
-                    line,
-                    font_size,
-                    thickness,
-                    bold,
-                    italic,
-                );
-                text_size.x = Math.max(text_size.x, extents.x);
-            }
-
-            text_size.y += Math.round(
-                (strings.length - 1) * font.get_interline(font_size.y),
-            );
-        }
-
-        bbox.w = text_size.x;
-        bbox.h = text_size.y;
-
-        // Adjust the bbox for justification, mirroring, etc.
-        const italic_offset = this.italic
-            ? Math.round(font_size.y * Font.italic_tilt)
-            : 0;
-
-        switch (this.h_align) {
-            case "left":
-                if (this.mirrored) {
-                    bbox.x = bbox.x - (bbox.w - italic_offset);
-                }
-                break;
-            case "center":
-                bbox.x = bbox.x - (bbox.w - italic_offset) / 2;
-                break;
-            case "right":
-                if (!this.mirrored) {
-                    bbox.x = bbox.x - (bbox.w - italic_offset);
-                }
-                break;
-        }
-
-        switch (this.v_align) {
-            case "top":
-                break;
-            case "center":
-                bbox.y = bbox.y - (bbox.h + overbar_offset) / 2;
-                break;
-            case "bottom":
-                bbox.y = bbox.y - (bbox.h + overbar_offset);
-                break;
-        }
-
-        return bbox;
+    get font(): Font {
+        return this.attributes.font ?? StrokeFont.default();
     }
-}
 
-function get_bold_thickness(text_width: number): number {
-    return Math.round(text_width / 5);
-}
+    /**
+     * Width and height of the box KiCad gives this text (see
+     * Font.get_text_box_size()), sized with get_effective_text_thickness().
+     */
+    get text_box_size(): Vec2 {
+        return this.font.get_text_box_size(
+            this.shown_text,
+            this.text_size,
+            this.get_effective_text_thickness(),
+            this.multiline,
+            this.line_spacing,
+        );
+    }
 
-function get_normal_thickness(text_width: number): number {
-    return Math.round(text_width / 8);
-}
+    /**
+     * The text's box, unrotated, placed on its anchor by its justification
+     * (mirrored text extends the other way).
+     */
+    get_text_box(): BBox {
+        return this.oriented_text_box(
+            this.text_pos,
+            new Vec2(this.mirrored ? -1 : 1, 0),
+            new Vec2(0, 1),
+        );
+    }
 
-/** Prevents text from being too thick and overlapping
- *
- * As per KiCad's Clamp_Text_PenSize, this limits normal text to
- * 18% and bold text to 25%.
- */
-function clamp_thickness(
-    thickness: number,
-    text_width: number,
-    allow_bold: boolean,
-) {
-    const max_thickness = Math.round(text_width * (allow_bold ? 0.25 : 0.18));
-    return Math.min(thickness, max_thickness);
+    /**
+     * The text box laid from `anchor` by the justification along `reading`
+     * (the direction the text reads in) and `down` (from the tops of the
+     * glyphs to their baseline), as an axis-aligned box.
+     *
+     * Italic text's box moves along the line by the slant of its height,
+     * times 0, 1/2 or 1 for left, centre or right justification: kicad-cli 9
+     * centres an italic 5 mm field 0, 0.3125 and 0.625 mm further along than
+     * an upright one, in every symbol orientation.
+     */
+    protected oriented_text_box(anchor: Vec2, reading: Vec2, down: Vec2) {
+        const size = this.text_box_size;
+        const slant = this.italic ? Font.italic_tilt * this.text_height : 0;
+        const along = {
+            left: [0, size.x],
+            center: [(slant - size.x) / 2, (slant + size.x) / 2],
+            right: [slant - size.x, slant],
+        }[this.h_align];
+        const across = {
+            top: [0, size.y],
+            center: [-size.y / 2, size.y / 2],
+            bottom: [-size.y, 0],
+        }[this.v_align];
+        return BBox.from_points(
+            along.flatMap((u) =>
+                across.map((v) =>
+                    anchor.add(reading.multiply(u!)).add(down.multiply(v!)),
+                ),
+            ),
+        );
+    }
 }
