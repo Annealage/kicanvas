@@ -4,311 +4,118 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+// Expected values are measured on kicad-cli 9 SVG exports of the same pins.
+
 import { assert } from "chai";
 import { Vec2 } from "../../../src/base/math";
 import {
-    PinLabelInternals,
-    PinPainter,
-    PinShapeInternals,
-    type PinInfo,
+    pin_graphics,
+    pin_text_placements,
+    type PlacedPin,
 } from "../../../src/viewers/schematic/painters/pin";
 
-suite("sch.painters.pin.PinPainter", function () {
-    test(".apply_symbol_transformations() - position only", function () {
-        const pin: PinInfo = {
-            position: new Vec2(1000, 2000),
-        } as PinInfo;
-        const transforms = {
-            position: new Vec2(127000, 254000),
-            rotations: 0,
-            mirror_x: false,
-            mirror_y: false,
-        };
+function assert_point(actual: Vec2, x: number, y: number, tol = 1e-6) {
+    assert.closeTo(actual.x, x, tol, `x of (${actual.x}, ${actual.y})`);
+    assert.closeTo(actual.y, y, tol, `y of (${actual.x}, ${actual.y})`);
+}
 
-        PinPainter.apply_symbol_transformations(pin, transforms);
+// A pin on the left of a body, connecting at the origin and pointing right.
+const right: PlacedPin = {
+    connection: new Vec2(0, 0),
+    direction: new Vec2(1, 0),
+    length: 2.54,
+};
+// A pin below a body, pointing up.
+const up: PlacedPin = {
+    connection: new Vec2(0, 0),
+    direction: new Vec2(0, -1),
+    length: 2.54,
+};
 
-        assert.equal(pin.position.x, 128000);
-        assert.equal(pin.position.y, 252000);
+suite("sch.painters.pin: graphic styles", function () {
+    test("line", function () {
+        const { lines, circles } = pin_graphics(right, "line", "input");
+        assert.equal(lines.length, 1);
+        assert.equal(circles.length, 0);
+        assert_point(lines[0]![1]!, 2.54, 0);
     });
 
-    test(".apply_symbol_transformations() - rotations only", function () {
-        const pin: PinInfo = {
-            position: new Vec2(1000, 0),
-        } as PinInfo;
-        const transforms = {
-            position: new Vec2(127000, 254000),
-            rotations: 1,
-            mirror_x: false,
-            mirror_y: false,
-        };
-
-        PinPainter.apply_symbol_transformations(pin, transforms);
-        assert.equal(pin.position.x, 127000);
-        assert.equal(pin.position.y, 253000);
-
-        pin.position.set(1000, 0);
-        transforms.rotations = 2;
-        PinPainter.apply_symbol_transformations(pin, transforms);
-        assert.equal(pin.position.x, 126000);
-        assert.equal(pin.position.y, 254000);
-
-        pin.position.set(1000, 0);
-        transforms.rotations = 3;
-        PinPainter.apply_symbol_transformations(pin, transforms);
-        assert.equal(pin.position.x, 127000);
-        assert.equal(pin.position.y, 255000);
-
-        pin.position.set(1000, 0);
-        transforms.rotations = 4;
-        PinPainter.apply_symbol_transformations(pin, transforms);
-        assert.equal(pin.position.x, 128000);
-        assert.equal(pin.position.y, 254000);
+    test("inverted stops the line at the bubble", function () {
+        const { lines, circles } = pin_graphics(right, "inverted", "input");
+        assert_point(lines[0]![1]!, 1.27, 0);
+        assert_point(circles[0]!.center, 1.905, 0);
+        assert.closeTo(circles[0]!.radius, 0.635, 1e-9);
     });
 
-    test(".apply_symbol_transformations() - mirroring", function () {
-        const pin: PinInfo = {
-            position: new Vec2(0, 1000),
-            orientation: "up",
-        } as PinInfo;
-        const transforms = {
-            position: new Vec2(127000, 254000),
-            rotations: 0,
-            mirror_x: true,
-            mirror_y: false,
-        };
+    test("clock wedge sits inside the body", function () {
+        const { lines } = pin_graphics(right, "clock", "input");
+        assert_point(lines[1]![0]!, 2.54, -0.635);
+        assert_point(lines[1]![1]!, 3.81, 0);
+        assert_point(lines[1]![2]!, 2.54, 0.635);
+    });
 
-        PinPainter.apply_symbol_transformations(pin, transforms);
-        assert.equal(pin.position.x, 127000);
-        assert.equal(pin.position.y, 255000);
-        assert.equal(pin.orientation, "down");
+    test("active-low mark is above a horizontal pin, left of a vertical one", function () {
+        const h = pin_graphics(right, "input_low", "input").lines[1]!;
+        assert_point(h[1]!, 1.27, -1.27);
+        const v = pin_graphics(up, "input_low", "input").lines[1]!;
+        assert_point(v[1]!, -1.27, -1.27);
+        const out = pin_graphics(right, "output_low", "input").lines[1]!;
+        assert_point(out[0]!, 2.54, -1.27);
+        assert_point(out[1]!, 1.27, 0);
+    });
 
-        pin.position.set(1000, 0);
-        pin.orientation = "left";
-        transforms.mirror_x = false;
-        transforms.mirror_y = true;
-        PinPainter.apply_symbol_transformations(pin, transforms);
-        assert.equal(pin.position.x, 126000);
-        assert.equal(pin.position.y, 254000);
-        assert.equal(pin.orientation, "right");
+    test("falling edge clock is outside the body", function () {
+        const { lines } = pin_graphics(right, "edge_clock_high", "input");
+        assert_point(lines[0]![1]!, 1.27, 0);
+        assert_point(lines[1]![1]!, 1.27, 0);
+    });
+
+    test("non-logic cross is centred on the pin's end", function () {
+        const { lines } = pin_graphics(right, "non_logic", "input");
+        const xs = lines
+            .slice(1)
+            .flat()
+            .map((p) => p.x);
+        assert.closeTo(Math.min(...xs), 1.905, 1e-9);
+        assert.closeTo(Math.max(...xs), 3.175, 1e-9);
+    });
+
+    test("no_connect pins get an X on the connection point", function () {
+        const { lines } = pin_graphics(right, "line", "no_connect");
+        assert.equal(lines.length, 3);
+        assert_point(lines[1]![0]!, -0.381, -0.381);
     });
 });
 
-suite("sch.painters.pin.PinShapeInternals", function () {
-    test(".stem()", function () {
-        // Reference data from KiCad debugging
-        let stem;
-
-        stem = PinShapeInternals.stem(new Vec2(1714500, 876300), "left", 25400);
-        assert.equal(stem.p0.x, 1689100);
-        assert.equal(stem.p0.y, 876300);
-        assert.equal(stem.dir.x, 1);
-        assert.equal(stem.dir.y, 0);
-
-        stem = PinShapeInternals.stem(new Vec2(1587500, 673100), "down", 25400);
-        assert.equal(stem.p0.x, 1587500);
-        assert.equal(stem.p0.y, 698500);
-        assert.equal(stem.dir.x, 0);
-        assert.equal(stem.dir.y, -1);
-
-        stem = PinShapeInternals.stem(new Vec2(1587500, 1028700), "up", 25400);
-        assert.equal(stem.p0.x, 1587500);
-        assert.equal(stem.p0.y, 1003300);
-        assert.equal(stem.dir.x, 0);
-        assert.equal(stem.dir.y, 1);
-
-        stem = PinShapeInternals.stem(
-            new Vec2(1460500, 800100),
-            "right",
-            25400,
-        );
-        assert.equal(stem.p0.x, 1485900);
-        assert.equal(stem.p0.y, 800100);
-        assert.equal(stem.dir.x, -1);
-        assert.equal(stem.dir.y, 0);
-    });
-});
-
-suite("sch.painters.pin.PinLabelInternals", function () {
-    // Reference data from KiCad debugging
-    const text_margin = 1016;
-    const pin_thickness = 1524;
-    const text_thickness = 1524;
-    const pin_length = 25400;
-    const text_offset = 5080;
-
-    test(".place_above()", function () {
-        let placement;
-
-        placement = PinLabelInternals.place_above(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "right",
-        );
-
-        assert.equal(placement.offset.x, 12700);
-        assert.equal(placement.offset.y, -2540);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "bottom");
-        assert.equal(placement.orientation, "right");
-
-        placement = PinLabelInternals.place_above(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "left",
-        );
-
-        assert.equal(placement.offset.x, -12700);
-        assert.equal(placement.offset.y, -2540);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "bottom");
-        assert.equal(placement.orientation, "left");
-
-        placement = PinLabelInternals.place_above(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "down",
-        );
-
-        assert.equal(placement.offset.x, -2540);
-        assert.equal(placement.offset.y, 12700);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "bottom");
-        assert.equal(placement.orientation, "down");
-
-        placement = PinLabelInternals.place_above(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "up",
-        );
-
-        assert.equal(placement.offset.x, -2540);
-        assert.equal(placement.offset.y, -12700);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "bottom");
-        assert.equal(placement.orientation, "up");
+suite("sch.painters.pin: names and numbers", function () {
+    test("with a name offset the name is inside and the number above", function () {
+        const { name, number } = pin_text_placements(right, 0.508);
+        assert_point(name.position, 3.048, 0);
+        assert.equal(name.h_align, "left");
+        assert.equal(name.v_align, "center");
+        assert_point(number.position, 1.27, -0.254);
+        assert.equal(number.v_align, "bottom");
     });
 
-    test(".place_below()", function () {
-        let placement;
+    test("vertical pins write upwards, above meaning to the left", function () {
+        const { name, number } = pin_text_placements(up, 0.508);
+        assert.equal(name.angle, 90);
+        assert.equal(name.h_align, "left");
+        assert_point(name.position, 0, -3.048);
+        assert_point(number.position, -0.254, -1.27);
 
-        placement = PinLabelInternals.place_below(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "right",
+        const down = pin_text_placements(
+            { ...up, direction: new Vec2(0, 1) },
+            0.508,
         );
-
-        assert.equal(placement.offset.x, 12700);
-        assert.equal(placement.offset.y, 2540);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "top");
-        assert.equal(placement.orientation, "right");
-
-        placement = PinLabelInternals.place_below(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "left",
-        );
-
-        assert.equal(placement.offset.x, -12700);
-        assert.equal(placement.offset.y, 2540);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "top");
-        assert.equal(placement.orientation, "left");
-
-        placement = PinLabelInternals.place_below(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "down",
-        );
-
-        assert.equal(placement.offset.x, 2540);
-        assert.equal(placement.offset.y, 12700);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "top");
-        assert.equal(placement.orientation, "down");
-
-        placement = PinLabelInternals.place_below(
-            text_margin,
-            pin_thickness,
-            text_thickness,
-            pin_length,
-            "up",
-        );
-
-        assert.equal(placement.offset.x, 2540);
-        assert.equal(placement.offset.y, -12700);
-        assert.equal(placement.h_align, "center");
-        assert.equal(placement.v_align, "top");
-        assert.equal(placement.orientation, "up");
+        assert.equal(down.name.h_align, "right");
     });
 
-    test(".place_inside()", function () {
-        let placement;
-
-        placement = PinLabelInternals.place_inside(
-            text_offset,
-            text_thickness,
-            pin_length,
-            "left",
-        );
-
-        assert.equal(placement.offset.x, -29718);
-        assert.equal(placement.offset.y, 0);
-        assert.equal(placement.h_align, "right");
-        assert.equal(placement.v_align, "center");
-        assert.equal(placement.orientation, "left");
-
-        placement = PinLabelInternals.place_inside(
-            text_offset,
-            text_thickness,
-            pin_length,
-            "right",
-        );
-
-        assert.equal(placement.offset.x, 29718);
-        assert.equal(placement.offset.y, 0);
-        assert.equal(placement.h_align, "left");
-        assert.equal(placement.v_align, "center");
-        assert.equal(placement.orientation, "right");
-
-        placement = PinLabelInternals.place_inside(
-            text_offset,
-            text_thickness,
-            pin_length,
-            "up",
-        );
-
-        assert.equal(placement.offset.x, 0);
-        assert.equal(placement.offset.y, -29718);
-        assert.equal(placement.h_align, "left");
-        assert.equal(placement.v_align, "center");
-        assert.equal(placement.orientation, "up");
-
-        placement = PinLabelInternals.place_inside(
-            text_offset,
-            text_thickness,
-            pin_length,
-            "down",
-        );
-
-        assert.equal(placement.offset.x, 0);
-        assert.equal(placement.offset.y, 29718);
-        assert.equal(placement.h_align, "right");
-        assert.equal(placement.v_align, "center");
-        assert.equal(placement.orientation, "down");
+    test("with no offset the name is above and the number below", function () {
+        const { name, number } = pin_text_placements(right, 0);
+        assert_point(name.position, 1.27, -0.254);
+        assert.equal(name.v_align, "bottom");
+        assert_point(number.position, 1.27, 0.254);
+        assert.equal(number.v_align, "top");
     });
 });

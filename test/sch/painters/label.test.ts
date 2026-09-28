@@ -4,162 +4,173 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+// Expected values are measured on kicad-cli 9 SVG exports of the same labels.
+
 import { assert } from "chai";
-import { Angle, Vec2 } from "../../../src/base/math";
-import { NullRenderer } from "../../../src/graphics/null-renderer";
-import { GlobalLabel, HierarchicalLabel } from "../../../src/kicad/schematic";
-import { SchText } from "../../../src/kicad/text";
-import witch_hazel from "../../../src/kicanvas/themes/witch-hazel";
-import { DocumentPainter } from "../../../src/viewers/base/painter";
-import { ViewLayerSet } from "../../../src/viewers/base/view-layers";
+import type { Vec2 } from "../../../src/base/math";
 import {
-    GlobalLabelPainter,
-    HierarchicalLabelPainter,
-    LabelPainter,
+    DirectiveLabel,
+    GlobalLabel,
+    HierarchicalLabel,
+    NetLabel,
+    SchematicSheet,
+} from "../../../src/kicad/schematic";
+import {
+    directive_label_geometry,
+    global_label_geometry,
+    hierarchical_label_geometry,
+    local_label_text,
 } from "../../../src/viewers/schematic/painters/label";
 
-const renderer = new NullRenderer();
-const layer_set = new ViewLayerSet();
-const document_painter = new DocumentPainter(
-    renderer,
-    layer_set,
-    witch_hazel.board,
-);
+function assert_point(actual: Vec2, x: number, y: number, tol = 0.001) {
+    assert.closeTo(actual.x, x, tol, `x of (${actual.x}, ${actual.y})`);
+    assert.closeTo(actual.y, y, tol, `y of (${actual.x}, ${actual.y})`);
+}
 
-suite("sch.painters.label.LabelPainter()", function () {
-    const painter = new LabelPainter(document_painter, renderer);
-    const schtext = new SchText("abc");
+const effects = (size: number, extra = "") =>
+    `(effects (font (size ${size} ${size})${extra}) (justify left))`;
 
-    test(".get_text_offset()", function () {
-        // Reference values from KiCad debugging
-        schtext.text_size.set(12700, 12700);
-        assert.equal(painter.get_text_offset(schtext), 1905);
+suite("sch.painters.label: local labels", function () {
+    test("text is raised 0.15s + t off the wire, upright", function () {
+        const at0 = local_label_text(
+            new NetLabel(`(label "A" (at 20 20 0) ${effects(1.27)})`),
+        );
+        assert_point(at0.position, 20, 20 - 0.3493);
+        assert.equal(at0.angle, 0);
+        assert.equal(at0.h_align, "left");
+        assert.equal(at0.v_align, "bottom");
 
-        schtext.text_size.set(25400, 25400);
-        assert.equal(painter.get_text_offset(schtext), 3810);
+        const at90 = local_label_text(
+            new NetLabel(`(label "A" (at 20 20 90) ${effects(2.54)})`),
+        );
+        assert_point(at90.position, 20 - 0.6985, 20);
+        assert.equal(at90.angle, 90);
+        assert.equal(at90.h_align, "left");
+
+        const at180 = local_label_text(
+            new NetLabel(`(label "A" (at 20 20 180) ${effects(1.27)})`),
+        );
+        assert.equal(at180.angle, 0);
+        assert.equal(at180.h_align, "right");
     });
 
-    test(".get_box_expansion()", function () {
-        // Reference values from KiCad debugging
-        schtext.text_size.set(12700, 12700);
-        assert.equal(painter.get_box_expansion(schtext), 4763);
+    test("an explicit thickness sets the raise", function () {
+        const bold = local_label_text(
+            new NetLabel(
+                `(label "A" (at 0 0 0) ${effects(1.27, " (bold yes)")})`,
+            ),
+        );
+        assert_point(bold.position, 0, -0.4445);
 
-        schtext.text_size.set(25400, 25400);
-        assert.equal(painter.get_box_expansion(schtext), 9525);
-    });
-
-    test(".get_schematic_text_offset()", function () {
-        let offset: Vec2;
-
-        // Reference values from KiCad debugging
-        schtext.text_size.set(12700, 12700);
-        offset = painter.get_schematic_text_offset(null!, schtext);
-        assert.equal(offset.x, 0);
-        assert.equal(offset.y, -3493);
-
-        schtext.text_size.set(25400, 25400);
-        offset = painter.get_schematic_text_offset(null!, schtext);
-        assert.equal(offset.x, 0);
-        assert.equal(offset.y, -6985);
-
-        schtext.set_spin_style_from_angle(Angle.from_degrees(90));
-        offset = painter.get_schematic_text_offset(null!, schtext);
-        assert.equal(offset.x, -6985);
-        assert.equal(offset.y, 0);
+        const thick = local_label_text(
+            new NetLabel(
+                `(label "A" (at 0 0 0) ${effects(2, " (thickness 0.3)")})`,
+            ),
+        );
+        assert_point(thick.position, 0, -0.5998);
     });
 });
 
-suite("sch.painters.label.GlobalLabelPainter()", function () {
-    const painter = new GlobalLabelPainter(document_painter, renderer);
-
-    test(".get_schematic_text_offset() no tail", function () {
-        const schtext = new SchText("abc");
-        const label: GlobalLabel = {
-            shape: "passive",
-            at: {
-                rotation: 0,
-            },
-        } as GlobalLabel;
-        let offset: Vec2;
-        schtext.text_size.set(12700, 12700);
-
-        // Reference values from KiCad debugging
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 4763);
-        assert.equal(offset.y, 908);
-
-        label.at.rotation = 90;
-        schtext.set_spin_style_from_angle(Angle.from_degrees(90));
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 908);
-        assert.equal(offset.y, -4763);
-
-        label.at.rotation = 180;
-        schtext.set_spin_style_from_angle(Angle.from_degrees(180));
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, -4763);
-        assert.equal(offset.y, 908);
-
-        label.at.rotation = 270;
-        schtext.set_spin_style_from_angle(Angle.from_degrees(270));
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 908);
-        assert.equal(offset.y, 4763);
+suite("sch.painters.label: hierarchical labels", function () {
+    test("input flag is s long whatever the text", function () {
+        const g = hierarchical_label_geometry(
+            new HierarchicalLabel(
+                `(hierarchical_label "Hinp0" (shape input) (at 0 0 0) ${effects(1.27)})`,
+            ),
+        );
+        const expected = [
+            [0, 0],
+            [0.635, 0.635],
+            [1.27, 0.635],
+            [1.27, -0.635],
+            [0.635, -0.635],
+            [0, 0],
+        ];
+        assert.equal(g.outline.length, expected.length);
+        for (const [x, y] of expected) {
+            assert.isTrue(
+                g.outline.some(
+                    (p) =>
+                        Math.abs(p.x - x!) < 1e-6 && Math.abs(p.y - y!) < 1e-6,
+                ),
+                `vertex (${x}, ${y})`,
+            );
+        }
+        assert_point(g.text.position, 1.4604, 0);
     });
 
-    test(".get_schematic_text_offset() with tail", function () {
-        const schtext = new SchText("abc");
-        const label: GlobalLabel = {
-            shape: "input",
-            at: {
-                rotation: 0,
-            },
-        } as GlobalLabel;
-        let offset: Vec2;
-        schtext.text_size.set(12700, 12700);
-
-        // Reference values from KiCad debugging
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 14288);
-        assert.equal(offset.y, 908);
-
-        label.at.rotation = 90;
-        schtext.set_spin_style_from_angle(Angle.from_degrees(90));
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 908);
-        assert.equal(offset.y, -14288);
+    test("rotation 270 points down with right-aligned vertical text", function () {
+        const g = hierarchical_label_geometry(
+            new HierarchicalLabel(
+                `(hierarchical_label "H" (shape passive) (at 10 10 270) ${effects(2)})`,
+            ),
+        );
+        assert_point(g.text.position, 10, 12.3);
+        assert.equal(g.text.angle, 90);
+        assert.equal(g.text.h_align, "right");
+        const ys = g.outline.map((p) => p.y);
+        assert.closeTo(Math.max(...ys), 12, 1e-6);
+        assert.closeTo(Math.min(...ys), 10, 1e-6);
     });
 });
 
-suite("sch.painters.label.HierarchicalLabelPainter()", function () {
-    const painter = new HierarchicalLabelPainter(document_painter, renderer);
-    const schtext = new SchText("abc");
+suite("sch.painters.label: global labels", function () {
+    test("box height, arrow depth and text inset", function () {
+        const g = global_label_geometry(
+            new GlobalLabel(
+                `(global_label "Ginp0" (shape input) (at 0 0 0) ${effects(1.27)})`,
+            ),
+        );
+        // kicad-cli: shoulders at (1.1113, +-1.2704), text anchor (1.4287, 0.0909)
+        assert_point(g.outline[1]!, 1.1113, -1.2704);
+        assert_point(g.outline[5]!, 1.1113, 1.2704);
+        assert_point(g.text.position, 1.4287, 0.0909);
+    });
 
-    test(".get_schematic_text_offset()", function () {
-        const label: HierarchicalLabel = {
-            shape: "input",
-            at: {
-                rotation: 0,
-            },
-        } as HierarchicalLabel;
+    test("pointed ends add 0.875s", function () {
+        const at = (shape: string) =>
+            global_label_geometry(
+                new GlobalLabel(
+                    `(global_label "C021Wg" (shape ${shape}) (at 0 0 0) ${effects(1.27)})`,
+                ),
+            ).outline;
+        const tip = (pts: Vec2[]) => Math.max(...pts.map((p) => p.x));
+        // kicad-cli: passive 8.8330, input and output 9.9443, bidirectional 11.0556
+        assert.closeTo(tip(at("input")) - tip(at("passive")), 1.1113, 0.001);
+        assert.closeTo(tip(at("output")) - tip(at("passive")), 1.1113, 0.001);
+        assert.closeTo(
+            tip(at("bidirectional")) - tip(at("passive")),
+            2.2226,
+            0.001,
+        );
+    });
+});
 
-        let offset: Vec2;
+suite("sch.painters.label: netclass flags", function () {
+    const flag = (shape: string, rot: number) =>
+        new DirectiveLabel(
+            `(netclass_flag "" (length 2.54) (shape ${shape}) (at 0 0 ${rot}) ${effects(1.27)})`,
+            null! as SchematicSheet,
+        );
 
-        // Reference values from KiCad debugging
-        schtext.text_size.set(12700, 12700);
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 14605);
-        assert.equal(offset.y, 0);
+    test("dot flag points up at rotation 0 and left at 90", function () {
+        const up = directive_label_geometry(flag("dot", 0));
+        assert_point(up.lines[0]![1]!, 0, -2.1844);
+        assert_point(up.circles[0]!.center, 0, -2.54);
+        assert.closeTo(up.circles[0]!.radius, 0.3556, 1e-6);
+        assert.isTrue(up.circles[0]!.filled);
 
-        schtext.text_size.set(25400, 25400);
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 29210);
-        assert.equal(offset.y, 0);
+        const left = directive_label_geometry(flag("dot", 90));
+        assert_point(left.circles[0]!.center, -2.54, 0);
+    });
 
-        label.at.rotation = 90;
-        schtext.set_spin_style_from_angle(Angle.from_degrees(90));
-        offset = painter.get_schematic_text_offset(label, schtext);
-        assert.equal(offset.x, 0);
-        assert.equal(offset.y, -29210);
+    test("rectangle head is 1.6256 x 0.8128 on the stem end", function () {
+        const g = directive_label_geometry(flag("rectangle", 0));
+        const pts = g.lines[0]!;
+        assert_point(pts[1]!, 0, -2.1336);
+        const xs = pts.map((p) => p.x);
+        const ys = pts.map((p) => p.y);
+        assert.closeTo(Math.max(...xs), 0.8128, 1e-6);
+        assert.closeTo(Math.min(...ys), -2.9464, 1e-6);
     });
 });

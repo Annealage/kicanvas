@@ -22,40 +22,19 @@ import {
 } from "./common";
 import { P, T, parse_expr, type Parseable } from "./parser";
 
-/* Default values for various things found in schematics
- * From EESchema's default_values.h, converted from mils to mm. */
+/* Default sizes in schematics, in mm, measured on kicad-cli 9 SVG exports. */
 export const DefaultValues = {
-    /* The size of the rectangle indicating an unconnected wire or label */
-    dangling_symbol_size: 0.3048, // 12 mils
-
-    /* The size of the rectangle indicating a connected, unselected wire end */
-    unselected_end_size: 0.1016, // 4 mils
-
-    pin_length: 2.54, // 100 mils
-    pinsymbol_size: 0.635, // 25 mils
-    pinnum_size: 1.27, // 50 mils
-    pinname_size: 1.27, // 50 mils
-    selection_thickness: 0.0762, // 3 mils
-    line_width: 0.1524, // 6 mils
-    wire_width: 0.1524, // 6 mils
-    bus_width: 0.3048, // 12 mils
-    noconnect_size: 1.2192, // 48 mils
-    junction_diameter: 0.9144, // 36 mils
-    target_pin_radius: 0.381, // 15 mils
-
-    /* The default bus and wire entry size. */
-    sch_entry_size: 2.54, // 100 mils
-
-    text_size: 1.27, // 50 mils
-
-    /* Ratio of the font height to the baseline of the text above the wire. */
-    text_offset_ratio: 0.15, // unitless ratio
-
-    /* Ratio of the font height to space around global labels */
-    label_size_ratio: 0.375, // unitless ratio
-
-    /* The offset of the pin name string from the end of the pin in mils. */
-    pin_name_offset: 0.508, // 20 mils
+    /* Stroke width of pins, no-connect marks, and graphics and text that
+     * give no width of their own. */
+    line_width: 0.1524,
+    wire_width: 0.1524,
+    bus_width: 0.3048,
+    /* Size of the X marking a no_connect. */
+    noconnect_size: 1.2192,
+    /* Diameter of a junction with (diameter 0). */
+    junction_diameter: 0.9144,
+    /* Pin name offset of a symbol with no (pin_names (offset)). */
+    pin_name_offset: 0.508,
 };
 
 export type SchematicDrawing = Polyline | Text | Circle | Image;
@@ -151,58 +130,71 @@ export class KicadSch {
         this.update_hierarchical_data();
     }
 
-    update_hierarchical_data(path?: string) {
-        // Assigns SchematicSymbol properties based on data in symbol_instances,
-        // used for differing values in hierarchical sheet instances.
-        // See SCH_SHEET_LIST::UpdateSymbolInstanceData
-        path ??= ``;
-
-        const root_symbol_instances = (
-            this.project?.root_schematic_page?.document as KicadSch
-        )?.symbol_instances;
-        const global_symbol_instances = this.symbol_instances;
+    /**
+     * Applies the per-instance data for this file shown as the page whose
+     * instance path is `path` ("" when the file is shown on its own).
+     *
+     * Since KiCad 7 each symbol lists its reference and unit for every
+     * sheet instance in its (instances), keyed by the page's instance path,
+     * and each sheet lists its page numbers the same way (KiCad file-format
+     * documentation, "Instance Path"). KiCad 6 files keep them instead in the
+     * root file's (symbol_instances) and (sheet_instances) tables, keyed by
+     * the page's path and the item's uuid. For those, kicad-cli 9 shows each
+     * page's own reference and unit but one value and footprint on every
+     * page, those of the symbol's last table entry (measured on a KiCad 6
+     * sheet used twice).
+     */
+    update_hierarchical_data(path = "") {
+        const root = this.project?.root_schematic_page?.document as
+            | KicadSch
+            | undefined;
+        const symbol_tables = [root?.symbol_instances, this.symbol_instances];
+        const sheet_tables = [root?.sheet_instances, this.sheet_instances];
 
         for (const s of this.symbols.values()) {
-            const symbol_path = `${path}/${s.uuid}`;
-            const instance_data =
-                root_symbol_instances?.get(symbol_path) ??
-                global_symbol_instances?.get(symbol_path) ??
-                s.instances.get(path);
-
-            if (!instance_data) {
+            const own = s.instances.get(path);
+            if (own) {
+                s.reference = own.reference ?? s.reference;
+                s.unit = own.unit ?? s.unit;
+                s.value = own.value ?? s.value;
+                s.footprint = own.footprint ?? s.footprint;
                 continue;
             }
 
-            s.reference = instance_data.reference ?? s.reference;
-            s.value = instance_data.value ?? s.value;
-            s.footprint = instance_data.footprint ?? s.footprint;
-            s.unit = instance_data.unit ?? s.unit;
+            const key = `${path}/${s.uuid}`;
+            const table = symbol_tables.find((t) => t?.get(key));
+            const legacy = table?.get(key);
+            if (!table || !legacy) {
+                continue;
+            }
+
+            const last = table.last_for_symbol(s.uuid) ?? legacy;
+            s.reference = legacy.reference ?? s.reference;
+            s.unit = legacy.unit ?? s.unit;
+            s.value = last.value ?? s.value;
+            s.footprint = last.footprint ?? s.footprint;
         }
 
-        // See SCH_SHEET_LIST::UpdateSheetInstanceData
-        const root_sheet_instances = (
-            this.project?.root_schematic_page?.document as KicadSch
-        )?.sheet_instances;
-        const global_sheet_instances = this.sheet_instances;
-
         for (const s of this.sheets) {
-            const sheet_path = `${path}/${s.uuid}`;
-            const instance_data =
-                root_sheet_instances?.get(sheet_path) ??
-                global_sheet_instances?.get(sheet_path) ??
-                s.instances.get(path);
+            const data =
+                s.instances.get(path) ??
+                sheet_tables
+                    .map((t) => t?.get(`${path}/${s.uuid}`))
+                    .find((d) => d);
 
-            if (!instance_data) {
+            if (!data) {
                 continue;
             }
 
-            s.page = instance_data.page;
-            s.path = instance_data.path;
+            s.page = data.page;
+            s.path = data.path;
 
+            // KiCad 6 sheets list no instances of their own; give them one
+            // so the project can find the pages they lead to.
             if (!s.instances.size) {
                 const inst = new SchematicSheetInstance();
-                inst.page = instance_data.page;
-                inst.path = instance_data.path;
+                inst.page = data.page;
+                inst.path = data.path;
                 s.instances.set("", inst);
             }
         }
@@ -670,9 +662,8 @@ export class LibText extends Text {
         super(expr, parent);
 
         if (parent instanceof LibSymbol || parent instanceof SchematicSymbol) {
-            // From sch_sexpr_parser.cpp:LIB_TEXT* SCH_SEXPR_PARSER::parseText()
-            // "Yes, LIB_TEXT is really decidegrees even though all the others are degrees. :("
-            // motherfuck.
+            // Symbol text angles are stored in tenths of a degree (KiCad
+            // file-format documentation, "Position Identifier").
             this.at.rotation /= 10;
         }
     }
@@ -805,8 +796,8 @@ export class DirectiveLabel extends Label {
         expr: Parseable,
         public parent: SchematicSheet,
     ) {
-        // For some reasons,
-        // kicad source code use directive label to represent "netclass_flag".
+        // (netclass_flag) is the file's name for what the schematic editor
+        // calls a directive label.
         super();
         Object.assign(
             this,
@@ -847,6 +838,15 @@ export class LibSymbols {
     by_name(name: string) {
         return this.#symbols_by_name.get(name);
     }
+}
+
+/** Splits "NAME_UNIT_STYLE" into its unit and body style numbers. */
+function parse_unit_identifier(name: string) {
+    const match = /_(\d+)_(\d+)$/.exec(name);
+    if (!match) {
+        return undefined;
+    }
+    return { unit: parseInt(match[1]!, 10), style: parseInt(match[2]!, 10) };
 }
 
 export class LibSymbol {
@@ -1011,31 +1011,18 @@ export class LibSymbol {
         return count;
     }
 
+    /*
+     * A child symbol's name is its unit identifier, "NAME_UNIT_STYLE": UNIT
+     * 0 draws on every unit and STYLE 0 on both body styles (KiCad
+     * file-format documentation, "Symbol Unit Identifier"). Symbols without
+     * one are unit 0, style 0.
+     */
     get unit(): number {
-        // KiCad encodes the symbol unit into the name, for example,
-        // MCP6001_1_1 is unit 1 and MCP6001_2_1 is unit 2.
-        // Unit 0 is common to all units.
-        // See SCH_SEXPR_PARSER::ParseSymbol.
-        const parts = this.name.split("_");
-        if (parts.length < 3) {
-            return 0;
-        }
-
-        return parseInt(parts.at(-2)!, 10);
+        return parse_unit_identifier(this.name)?.unit ?? 0;
     }
 
     get style(): number {
-        // KiCad "De Morgan" body styles are indicated with a number greater
-        // than one at the end of the symbol name.
-        // MCP6001_1_1 is the normal body and and MCP6001_1_2 is the alt style.
-        // Style 0 is common to all styles.
-        // See SCH_SEXPR_PARSER::ParseSymbol.
-        const parts = this.name.split("_");
-        if (parts.length < 3) {
-            return 0;
-        }
-
-        return parseInt(parts.at(-1)!, 10);
+        return parse_unit_identifier(this.name)?.style ?? 0;
     }
 
     get description(): string {
@@ -1220,7 +1207,7 @@ export class PinAlternate {
                 P.start("alternate"),
                 P.positional("name"),
                 P.positional("type", T.string),
-                P.positional("shaped", T.string),
+                P.positional("shape", T.string),
             ),
         );
     }
@@ -1596,6 +1583,17 @@ export class SymbolInstances {
 
     get(key: string) {
         return this.symbol_instances.get(key);
+    }
+
+    /** The last entry listed for the symbol with this uuid, on any path. */
+    last_for_symbol(uuid: string) {
+        let last: SymbolInstance | undefined;
+        for (const [path, instance] of this.symbol_instances) {
+            if (path.endsWith(`/${uuid}`)) {
+                last = instance;
+            }
+        }
+        return last;
     }
 }
 

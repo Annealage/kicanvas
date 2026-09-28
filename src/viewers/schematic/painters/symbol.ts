@@ -34,8 +34,9 @@ export class LibSymbolPainter extends SchematicItemPainter {
             return;
         }
 
-        // Unit 0 has graphic common to all units. See LIB_SYMBOL::GetPins and
-        // LIB_ITEM::m_unit.
+        // Unit 0 holds the graphics every unit shares: a symbol unit
+        // identifier "NAME_UNIT_STYLE" with UNIT 0 is common to all units
+        // (KiCad file-format documentation, "Symbol Unit Identifier").
         const common_unit = s.units.get(0);
         if (common_unit) {
             this.#paint_unit(layer, common_unit, body_style);
@@ -133,6 +134,7 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
 
         if (si.dnp && layer.name == LayerNames.marks) {
             const bbox = get_symbol_body_and_pins_bbox(this.theme, si);
+            // kicad-cli draws the DNP cross three default line widths wide.
             const width = schematic_items.DefaultValues.line_width * 3;
             const color = this.theme.erc_error;
 
@@ -146,81 +148,49 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
 }
 
 export type SymbolTransform = {
+    /**
+     * Maps library coordinates (y up) to page offsets (y down) from the
+     * symbol's position.
+     */
     matrix: Matrix3;
     position: Vec2;
+    /** Quarter turns counterclockwise on the page, 0 to 3. */
     rotations: number;
     mirror_x: boolean;
     mirror_y: boolean;
 };
 
 /**
- * Determines the symbol position, orientation, and mirroring
- *
- * This is based on SCH_PAINTER::orientSymbol, where KiCad does some fun logic
- * to place a symbol instance. This tries to replicate that.
+ * Places a symbol instance. Measured with kicad-cli 9 on an asymmetric symbol
+ * at every (at x y r) and (mirror x|y): the library drawing (y up) is put on
+ * the page (y down), turned counterclockwise on screen by r, and then
+ * mirrored, (mirror x) top to bottom and (mirror y) left to right.
  */
-function get_symbol_transform(
+export function get_symbol_transform(
     symbol: schematic_items.SchematicSymbol,
 ): SymbolTransform {
-    // Note: KiCad uses a 2x2 transformation matrix for symbol orientation. It's
-    // literally the only place that uses this wacky matrix. We approximate it
-    // with carefully crafted Matrix3s. KiCad's symbol matrix is defined as
-    //      [x1, x2]
-    //      [y1, y2]
-    // which cooresponds to a Matrix3 of
-    //      [x1, x2, 0]
-    //      [x1, y2, 0]
-    //      [0,   0, 1]
-    const zero_deg_matrix = new Matrix3([1, 0, 0, 0, -1, 0, 0, 0, 1]); // [1, 0, 0, -1]
-    const ninety_deg_matrix = new Matrix3([0, -1, 0, -1, 0, 0, 0, 0, 1]); // [0, -1, -1, 0]
-    const one_eighty_deg_matrix = new Matrix3([-1, 0, 0, 0, 1, 0, 0, 0, 1]); // [-1, 0, 0, 1]
-    const two_seventy_deg_matrix = new Matrix3([0, 1, 0, 1, 0, 0, 0, 0, 1]); // [0, 1, 1, 0]
-    let rotations = 0;
+    const rotations = ((Math.round(symbol.at.rotation / 90) % 4) + 4) % 4;
+    const cos = [1, 0, -1, 0][rotations]!;
+    const sin = [0, 1, 0, -1][rotations]!;
+    const mirror_x = symbol.mirror == "x";
+    const mirror_y = symbol.mirror == "y";
+    const sx = mirror_y ? -1 : 1;
+    const sy = mirror_x ? -1 : 1;
 
-    let matrix = zero_deg_matrix;
-    if (symbol.at.rotation == 0) {
-        // leave matrix as is
-    } else if (symbol.at.rotation == 90) {
-        rotations = 1;
-        matrix = ninety_deg_matrix;
-    } else if (symbol.at.rotation == 180) {
-        rotations = 2;
-        matrix = one_eighty_deg_matrix;
-    } else if (symbol.at.rotation == 270) {
-        rotations = 3;
-        matrix = two_seventy_deg_matrix;
-    } else {
-        throw new Error(`unexpected rotation ${symbol.at.rotation}`);
-    }
-
-    if (symbol.mirror == "y") {
-        // * [-1, 0, 0, 1]
-        const x1 = matrix.elements[0]! * -1;
-        const y1 = matrix.elements[3]! * -1;
-        const x2 = matrix.elements[1]!;
-        const y2 = matrix.elements[4]!;
-        matrix.elements[0] = x1;
-        matrix.elements[1] = x2;
-        matrix.elements[3] = y1;
-        matrix.elements[4] = y2;
-    } else if (symbol.mirror == "x") {
-        // * [1, 0, 0, -1]
-        const x1 = matrix.elements[0]!;
-        const y1 = matrix.elements[3]!;
-        const x2 = matrix.elements[1]! * -1;
-        const y2 = matrix.elements[4]! * -1;
-        matrix.elements[0] = x1;
-        matrix.elements[1] = x2;
-        matrix.elements[3] = y1;
-        matrix.elements[4] = y2;
-    }
+    // page x = sx * (x cos - y sin), page y = -sy * (x sin + y cos)
+    // prettier-ignore
+    const matrix = new Matrix3([
+        sx * cos, -sy * sin, 0,
+        -sx * sin, -sy * cos, 0,
+        0, 0, 1,
+    ]);
 
     return {
-        matrix: matrix,
+        matrix,
         position: symbol.at.position,
-        rotations: rotations,
-        mirror_x: symbol.mirror == "x",
-        mirror_y: symbol.mirror == "y",
+        rotations,
+        mirror_x,
+        mirror_y,
     };
 }
 

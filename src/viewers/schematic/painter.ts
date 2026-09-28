@@ -15,10 +15,16 @@ import {
 } from "../../graphics";
 import type { SchematicTheme } from "../../kicad";
 import * as schematic_items from "../../kicad/schematic";
-import { LibText, SchField, SchText, StrokeFont } from "../../kicad/text";
+import { LibText, SchText, StrokeFont } from "../../kicad/text";
 import { StrokePainter } from "../base/painter";
 import { LayerNames, LayerSet, ViewLayer } from "./layers";
-import { BaseSchematicPainter, SchematicItemPainter } from "./painters/base";
+import {
+    BaseSchematicPainter,
+    SchematicItemPainter,
+    text_box,
+    text_pen,
+    type TextPlacement,
+} from "./painters/base";
 import {
     GlobalLabelPainter,
     HierarchicalLabelPainter,
@@ -26,7 +32,11 @@ import {
     NetLabelPainter,
 } from "./painters/label";
 import { PinPainter } from "./painters/pin";
-import { LibSymbolPainter, SchematicSymbolPainter } from "./painters/symbol";
+import {
+    LibSymbolPainter,
+    SchematicSymbolPainter,
+    type SymbolTransform,
+} from "./painters/symbol";
 
 class RectanglePainter extends SchematicItemPainter {
     classes = [schematic_items.Rectangle];
@@ -300,9 +310,9 @@ class JunctionPainter extends SchematicItemPainter {
 
     paint(layer: ViewLayer, j: schematic_items.Junction) {
         const color = this.theme.junction;
-        this.gfx.circle(
-            new Circle(j.at.position, (j.diameter || 1) / 2, color),
-        );
+        const diameter =
+            j.diameter || schematic_items.DefaultValues.junction_diameter;
+        this.gfx.circle(new Circle(j.at.position, diameter / 2, color));
     }
 }
 
@@ -360,6 +370,7 @@ class TextPainter extends SchematicItemPainter {
 
         schtext.apply_at(t.at);
         schtext.apply_effects(t.effects);
+        schtext.attributes.stroke_width = text_pen(t.effects) * 10000;
 
         const font_color = t.effects.font.color;
         if (font_color.is_transparent_black) {
@@ -370,15 +381,88 @@ class TextPainter extends SchematicItemPainter {
             schtext.attributes.color = this.dim_if_needed(font_color);
         }
 
+        // kicad-cli 9 draws a text item 0.25mm up the page from its anchor
+        // at every angle and justification (18 justification x angle cases
+        // at three sizes).
         this.gfx.state.push();
         StrokeFont.default().draw(
             this.gfx,
             schtext.shown_text,
-            schtext.text_pos,
+            schtext.text_pos.add(new Vec2(0, -0.25 * 10000)),
             schtext.attributes,
         );
         this.gfx.state.pop();
     }
+}
+
+/** A field's text placement, and the box around its text for hit testing. */
+export type FieldPlacement = TextPlacement & { box_center: Vec2; size: Vec2 };
+
+/**
+ * Places a field. Measured with kicad-cli 9 on fields of each justification
+ * at 0 and 90 degrees on a symbol at every rotation and mirror, on netclass
+ * flags and on sheets, over text sizes 0.8-3mm and thicknesses.
+ *
+ * A field's (at) is used on the page as written. A label's or sheet's field
+ * is anchored there with its own angle and justification. A symbol's field
+ * instead has its justification set a box of the text's size against that
+ * point as the unrotated symbol has it; the box turns and mirrors with the
+ * symbol, and the text is drawn upright, centred in the box. The box is the
+ * text's box (see text_box()): measured as the advance width + 3t wide and
+ * 0.83s + 2.49t tall (s the text height, t the text thickness), sitting
+ * further along by the italic slant for centred and right-justified text.
+ */
+export function field_placement(
+    field: schematic_items.Property,
+    text: string,
+    transform?: SymbolTransform,
+): FieldPlacement {
+    const effects = field.effects;
+    const box = text_box(text, effects);
+    const { x: width, y: height } = box.size;
+
+    // The symbol's orientation on the page, without its library y flip.
+    const orient = (v: Vec2) =>
+        transform ? transform.matrix.transform(new Vec2(v.x, -v.y)) : v;
+
+    const quarter = ((Math.round(field.at.rotation / 90) % 4) + 4) % 4;
+    const reading = new Vec2([1, 0, -1, 0][quarter]!, [0, -1, 0, 1][quarter]!);
+    const down = new Vec2(-reading.y, reading.x);
+
+    const { horizontal, vertical } = effects.justify;
+    const along = { left: 1, center: 0, right: -1 }[horizontal];
+    const across = { top: 1, center: 0, bottom: -1 }[vertical];
+    const box_center = field.at.position.add(
+        orient(
+            reading
+                .multiply((along * width + (1 - along) * box.slant) / 2)
+                .add(down.multiply((across * height) / 2)),
+        ),
+    );
+
+    const drawn = orient(reading);
+    const angle = Math.abs(drawn.x) >= Math.abs(drawn.y) ? 0 : 90;
+    const size = angle == 0 ? new Vec2(width, height) : new Vec2(height, width);
+
+    if (!transform) {
+        return {
+            position: field.at.position,
+            angle,
+            h_align: horizontal,
+            v_align: vertical,
+            box_center,
+            size,
+        };
+    }
+
+    return {
+        position: box_center,
+        angle,
+        h_align: "center",
+        v_align: "center",
+        box_center,
+        size,
+    };
 }
 
 class PropertyPainter extends SchematicItemPainter {
@@ -421,70 +505,37 @@ class PropertyPainter extends SchematicItemPainter {
             color = this.dim_if_needed(font_color);
         }
 
-        const parent = p.parent as schematic_items.SchematicSymbol;
-        const transform = this.view_painter.current_symbol_transform;
-        const matrix = transform?.matrix ?? Matrix3.identity();
+        const parent = p.parent;
+        const symbol =
+            parent instanceof schematic_items.SchematicSymbol
+                ? parent
+                : undefined;
 
         let text = p.shown_text;
 
-        if (p.name == "Reference" && parent.unit) {
-            text += parent.unit_suffix;
+        // A field whose text is "~" is empty.
+        if (text == "~") {
+            return;
         }
 
-        const schfield = new SchField(text, {
-            position: parent.at.position.multiply(10000),
-            transform: matrix,
-            is_symbol: parent instanceof schematic_items.SchematicSymbol,
-        });
+        if (p.name == "Reference" && symbol?.unit) {
+            text += symbol.unit_suffix;
+        }
 
-        schfield.apply_effects(p.effects);
-        schfield.attributes.angle = Angle.from_degrees(p.at.rotation);
-
-        // Position is tricky. KiCad's parser calls into SCH_FIELD::SetPosition
-        // when parsing which sets the position relative to the parent transform
-        // but KiCanvas doesn't do any of that. So we have to do that transform
-        // here.
-        let rel_position = p.at.position
-            .multiply(10000)
-            .sub(schfield.parent!.position);
-        rel_position = matrix.inverse().transform(rel_position);
-        rel_position = rel_position.add(schfield.parent!.position);
-
-        schfield.text_pos = rel_position;
-
-        const orient = schfield.draw_rotation;
-        const bbox = schfield.bounding_box;
-        const pos = bbox.center;
-
-        schfield.attributes.angle = orient;
-        schfield.attributes.h_align = "center";
-        schfield.attributes.v_align = "center";
-        schfield.attributes.stroke_width =
-            schfield.get_effective_text_thickness(
-                schematic_items.DefaultValues.line_width * 10000,
-            );
-        schfield.attributes.color = color;
-
-        const bbox_pts = Matrix3.scaling(0.0001, 0.0001).transform_all([
-            bbox.top_left,
-            bbox.top_right,
-            bbox.bottom_right,
-            bbox.bottom_left,
-            bbox.top_left,
-        ]);
+        const placement = field_placement(
+            p,
+            text,
+            symbol ? this.view_painter.current_symbol_transform : undefined,
+        );
 
         if (layer.name == LayerNames.interactive) {
             // Drawing text is expensive, just draw the bbox for the interactive layer.
-            this.gfx.line(new Polyline(Array.from(bbox_pts), 0.1, Color.white));
+            const { x, y } = placement.box_center;
+            const { x: w, y: h } = placement.size;
+            const box = new BBox(x - w / 2, y - h / 2, w, h);
+            this.gfx.line(Polyline.from_BBox(box, 0.1, Color.white));
         } else {
-            this.gfx.state.push();
-            StrokeFont.default().draw(
-                this.gfx,
-                schfield.shown_text,
-                pos,
-                schfield.attributes,
-            );
-            this.gfx.state.pop();
+            this.draw_text(text, p.effects, placement, color);
         }
     }
 }
@@ -507,6 +558,7 @@ class LibTextPainter extends SchematicItemPainter {
         const libtext = new LibText(lt.shown_text);
 
         libtext.apply_effects(lt.effects);
+        libtext.attributes.stroke_width = text_pen(lt.effects) * 10000;
         libtext.apply_at(lt.at);
         libtext.apply_symbol_transformations(current_symbol_transform);
 
@@ -606,33 +658,21 @@ class SchematicSheetPainter extends SchematicItemPainter {
         }
 
         if (layer.name == LayerNames.label) {
+            // kicad-cli draws a sheet pin as a hierarchical label pointing
+            // into the sheet: half a turn from the pin's (at) angle, with
+            // input and output swapped.
             for (const pin of ss.pins) {
                 const label = new schematic_items.HierarchicalLabel();
                 label.at = pin.at.copy();
+                label.at.rotation = (pin.at.rotation + 180) % 360;
                 label.effects = pin.effects;
                 label.text = pin.name;
-                label.shape = pin.shape;
-
-                switch (label.at.rotation) {
-                    case 0:
-                        label.at.rotation = 180;
-                        break;
-                    case 180:
-                        label.at.rotation = 0;
-                        break;
-                    case 90:
-                        label.at.rotation = 270;
-                        break;
-                    case 270:
-                        label.at.rotation = 90;
-                        break;
-                }
-
-                if (pin.shape == "input") {
-                    label.shape = "output";
-                } else if (pin.shape == "output") {
-                    label.shape = "input";
-                }
+                label.shape =
+                    pin.shape == "input"
+                        ? "output"
+                        : pin.shape == "output"
+                          ? "input"
+                          : pin.shape;
 
                 this.view_painter.paint_item(layer, label);
             }

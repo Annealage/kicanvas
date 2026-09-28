@@ -4,30 +4,182 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { Angle, Matrix3, Vec2 } from "../../../base/math";
-import { Color, Renderer } from "../../../graphics";
-import { Effects } from "../../../kicad/common";
+import { Angle, Vec2 } from "../../../base/math";
 import * as schematic_items from "../../../kicad/schematic";
-import {
-    EDAText,
-    StrokeFont,
-    type HAlign,
-    type VAlign,
-} from "../../../kicad/text";
 import { LayerNames, ViewLayer } from "../layers";
-import { SchematicItemPainter } from "./base";
+import {
+    SchematicItemPainter,
+    text_direction,
+    text_up,
+    type TextPlacement,
+} from "./base";
+import type { SymbolTransform } from "./symbol";
+
+/*
+ * Pin geometry measured on kicad-cli 9 SVG exports of symbols with pins of
+ * every graphic style and electrical type, pointing each way, at every symbol
+ * rotation and mirror, with name and number sizes of 0.5-2.54mm, pin lengths
+ * of 0.635-5.08mm and (pin_names (offset 0|0.508|1.27)) or no offset.
+ *
+ * Everything is laid out on the page after the symbol's transform: pin text
+ * is always upright, and the side a pin's decorations sit on ("above" the
+ * pin) is the page's top for a horizontal pin and its left for a vertical
+ * one, whatever the symbol's rotation or mirror.
+ */
 
 /**
- * Implements KiCad rendering logic for symbol pins.
- *
- * This is similar in scope to the EDAText class and its children.  It's
- * designed to recreate KiCad's behavior as closely as possible.
- *
- * The logic here is based a few small bits of LIB_PIN and EDA_ITEM, with the
- * vast majority adapted from SCH_PAINTER::draw( const LIB_PIN, ...), which is
- * a massive method at over 400 lines!
- *
+ * Radius of the inversion bubble; the clock wedge, the active-low marks and
+ * the non-logic cross are all sized in multiples of it. It does not scale with
+ * the pin's length or text size.
  */
+const DECORATION = 0.635;
+
+/** Half the size of the X drawn on a no_connect pin's connection point. */
+const NO_CONNECT_MARK = 0.381;
+
+/** Gap between a pin's line and a name or number written beside it. */
+const TEXT_MARGIN = 0.254;
+
+/** A pin placed on the page, in mm. */
+export type PlacedPin = {
+    /** Where wires connect. */
+    connection: Vec2;
+    /** Unit vector from the connection point towards the symbol body. */
+    direction: Vec2;
+    length: number;
+};
+
+export type PinGraphics = {
+    lines: Vec2[][];
+    circles: { center: Vec2; radius: number }[];
+};
+
+/** Places a library pin on the page with its symbol's transform. */
+export function place_pin(
+    def: schematic_items.PinDefinition,
+    transform: SymbolTransform,
+): PlacedPin {
+    const quarter = ((Math.round(def.at.rotation / 90) % 4) + 4) % 4;
+    const lib_direction = new Vec2(
+        [1, 0, -1, 0][quarter]!,
+        [0, 1, 0, -1][quarter]!,
+    );
+    return {
+        connection: transform.position.add(
+            transform.matrix.transform(def.at.position),
+        ),
+        direction: transform.matrix.transform(lib_direction),
+        length: def.length,
+    };
+}
+
+/** Page angle (0 or 90) that text along a pin is written at. */
+function pin_text_angle(pin: PlacedPin) {
+    return Math.abs(pin.direction.x) >= Math.abs(pin.direction.y) ? 0 : 90;
+}
+
+/**
+ * The strokes of a pin: its line, its graphic style and the no-connect mark.
+ */
+export function pin_graphics(
+    pin: PlacedPin,
+    shape: schematic_items.PinShape,
+    type: schematic_items.PinElectricalType,
+): PinGraphics {
+    const u = pin.direction;
+    const above = text_up(pin_text_angle(pin));
+    const root = pin.connection.add(u.multiply(pin.length));
+    const at = (along: number, across: number) =>
+        root.add(u.multiply(along)).add(above.multiply(across));
+    const d = DECORATION;
+
+    const lines: Vec2[][] = [];
+    const circles: PinGraphics["circles"] = [];
+
+    // The bubble and the external falling-edge wedge take the last 2d of the
+    // pin, so the line stops short of the body.
+    const shortened =
+        shape == "inverted" ||
+        shape == "inverted_clock" ||
+        shape == "edge_clock_high";
+    lines.push([pin.connection, at(shortened ? -2 * d : 0, 0)]);
+
+    if (shape == "inverted" || shape == "inverted_clock") {
+        circles.push({ center: at(-d, 0), radius: d });
+    }
+    if (shape == "clock" || shape == "inverted_clock" || shape == "clock_low") {
+        lines.push([at(0, d), at(2 * d, 0), at(0, -d)]);
+    }
+    if (shape == "input_low" || shape == "clock_low") {
+        lines.push([at(-2 * d, 0), at(-2 * d, 2 * d), at(0, 0)]);
+    }
+    if (shape == "output_low") {
+        lines.push([at(0, 2 * d), at(-2 * d, 0)]);
+    }
+    if (shape == "edge_clock_high") {
+        lines.push([at(0, d), at(-2 * d, 0), at(0, -d)]);
+    }
+    if (shape == "non_logic") {
+        lines.push([at(-d, -d), at(d, d)]);
+        lines.push([at(-d, d), at(d, -d)]);
+    }
+
+    if (type == "no_connect") {
+        const c = pin.connection;
+        const m = NO_CONNECT_MARK;
+        lines.push([c.add(new Vec2(-m, -m)), c.add(new Vec2(m, m))]);
+        lines.push([c.add(new Vec2(m, -m)), c.add(new Vec2(-m, m))]);
+    }
+
+    return { lines, circles };
+}
+
+/**
+ * Where a pin's name and number are written. With a positive name offset
+ * the name sits inside the body, that far past the pin's end and centred on
+ * its line, and the number is centred above the pin. With no offset the name
+ * goes above the pin and the number below it.
+ */
+export function pin_text_placements(
+    pin: PlacedPin,
+    name_offset: number,
+): { name: TextPlacement; number: TextPlacement } {
+    const angle = pin_text_angle(pin);
+    const above = text_up(angle).multiply(TEXT_MARGIN);
+    const middle = pin.connection.add(pin.direction.multiply(pin.length / 2));
+
+    const beside = (side: Vec2, v_align: "top" | "bottom"): TextPlacement => ({
+        position: middle.add(side),
+        angle,
+        h_align: "center",
+        v_align,
+    });
+
+    if (name_offset > 0) {
+        const reading = text_direction(angle);
+        const reads_inwards =
+            pin.direction.x * reading.x + pin.direction.y * reading.y > 0
+                ? "left"
+                : "right";
+        return {
+            name: {
+                position: pin.connection.add(
+                    pin.direction.multiply(pin.length + name_offset),
+                ),
+                angle,
+                h_align: reads_inwards,
+                v_align: "center",
+            },
+            number: beside(above, "bottom"),
+        };
+    }
+
+    return {
+        name: beside(above, "bottom"),
+        number: beside(above.multiply(-1), "top"),
+    };
+}
+
 export class PinPainter extends SchematicItemPainter {
     override classes = [schematic_items.PinInstance];
 
@@ -39,573 +191,92 @@ export class PinPainter extends SchematicItemPainter {
         ];
     }
 
-    paint(layer: ViewLayer, p: schematic_items.PinInstance) {
-        if (p.definition.hide) {
+    override paint(layer: ViewLayer, pin: schematic_items.PinInstance) {
+        const transform = this.view_painter.current_symbol_transform;
+        const def = pin.definition;
+
+        if (!transform || def.hide) {
             return;
         }
 
-        const pin: PinInfo = {
-            pin: p,
-            def: p.definition,
-            position: p.definition.at.position.copy(),
-            orientation: angle_to_orientation(p.definition.at.rotation),
-        };
-
-        const current_symbol_transform =
-            this.view_painter.current_symbol_transform!;
-
-        const color = this.dim_if_needed(this.theme.pin);
-
-        PinPainter.apply_symbol_transformations(pin, current_symbol_transform);
-
-        this.gfx.state.push();
-        this.gfx.state.matrix = Matrix3.identity();
-        this.gfx.state.stroke = color;
+        const alternate = pin.alternate
+            ? def.alternates?.find((alt) => alt.name == pin.alternate)
+            : undefined;
+        const placed = place_pin(def, transform);
 
         if (
             layer.name == LayerNames.symbol_pin ||
             layer.name == LayerNames.interactive
         ) {
-            this.draw_pin_shape(this.gfx, pin);
+            this.#paint_graphics(
+                placed,
+                alternate?.shape ?? def.shape,
+                alternate?.type ?? def.type,
+            );
         }
+
         if (layer.name == LayerNames.symbol_foreground) {
-            this.draw_name_and_number(this.gfx, pin);
-        }
-
-        this.gfx.state.pop();
-    }
-
-    /**
-     * Applies symbol transformation (rotation, position, mirror).
-     *
-     * KiCad doesn't directly set the transformation for symbol items, instead,
-     * it indirectly sets them through individual rotations and transforms.
-     * See KiCad's sch_painter.cpp::orientSymbol.
-     */
-    static apply_symbol_transformations(
-        pin: PinInfo,
-        transforms: {
-            position: Vec2;
-            rotations: number;
-            mirror_x: boolean;
-            mirror_y: boolean;
-        },
-    ) {
-        for (let i = 0; i < transforms.rotations; i++) {
-            this.rotate(pin, new Vec2(0, 0), true);
-        }
-
-        if (transforms.mirror_x) {
-            this.mirror_vertically(pin, new Vec2(0, 0));
-        }
-
-        if (transforms.mirror_y) {
-            this.mirror_horizontally(pin, new Vec2(0, 0));
-        }
-
-        const parent_pos = transforms.position.multiply(new Vec2(1, -1));
-
-        pin.position = pin.position.add(parent_pos).multiply(new Vec2(1, -1));
-    }
-
-    /**
-     * Rotate the pin
-     *
-     * Based on LIB_PIN::Rotate, used by apply_symbol_transformations.
-     */
-    static rotate(pin: PinInfo, center: Vec2, ccw = false) {
-        const angle = Angle.from_degrees(ccw ? -90 : 90);
-        pin.position = angle.rotate_point(pin.position, center);
-
-        if (ccw) {
-            switch (pin.orientation) {
-                case "right":
-                    pin.orientation = "up";
-                    break;
-                case "up":
-                    pin.orientation = "left";
-                    break;
-                case "left":
-                    pin.orientation = "down";
-                    break;
-                case "down":
-                    pin.orientation = "right";
-                    break;
-            }
-        } else {
-            switch (pin.orientation) {
-                case "right":
-                    pin.orientation = "down";
-                    break;
-                case "down":
-                    pin.orientation = "left";
-                    break;
-                case "left":
-                    pin.orientation = "up";
-                    break;
-                case "up":
-                    pin.orientation = "right";
-                    break;
-            }
-        }
-    }
-
-    static mirror_horizontally(pin: PinInfo, center: Vec2) {
-        pin.position.x -= center.x;
-        pin.position.x *= -1;
-        pin.position.x += center.x;
-
-        if (pin.orientation == "right") {
-            pin.orientation = "left";
-        } else if (pin.orientation == "left") {
-            pin.orientation = "right";
-        }
-    }
-
-    static mirror_vertically(pin: PinInfo, center: Vec2) {
-        pin.position.y -= center.y;
-        pin.position.y *= -1;
-        pin.position.y += center.y;
-
-        if (pin.orientation == "up") {
-            pin.orientation = "down";
-        } else if (pin.orientation == "down") {
-            pin.orientation = "up";
-        }
-    }
-
-    /**
-     * Draws the pin's shape- the pin line along with any additional decoration
-     * depending on pin type.
-     */
-    draw_pin_shape(gfx: Renderer, pin: PinInfo) {
-        const { p0, dir } = PinShapeInternals.stem(
-            pin.position,
-            pin.orientation,
-            pin.def.length,
-        );
-
-        PinShapeInternals.draw(
-            gfx,
-            pin.def.type,
-            pin.def.shape,
-            pin.position,
-            p0,
-            dir,
-        );
-    }
-
-    /**
-     * Draw the pin's name and number, if they're visible.
-     */
-    draw_name_and_number(gfx: Renderer, pin: PinInfo) {
-        const def = pin.def;
-        const libsym = pin.pin.parent.lib_symbol;
-        const name = pin.pin.alternate ?? def.name.text;
-        const number = def.number.text;
-        const pin_length = def.length;
-        const hide_pin_names = libsym.pin_names.hide || !name || name == "~";
-        const hide_pin_numbers =
-            libsym.pin_numbers.hide || !number || number == "~";
-        const pin_thickness = schematic_items.DefaultValues.line_width;
-        const pin_name_offset = libsym.pin_names.offset;
-        //  24 mils * ratio
-        // From void SCH_PAINTER::draw( const LIB_PIN *aPin, int aLayer, bool aDimmed )
-        const text_margin =
-            0.6096 * schematic_items.DefaultValues.text_offset_ratio;
-        const num_thickness =
-            def.number.effects.font.thickness || pin_thickness;
-        const name_thickness =
-            def.number.effects.font.thickness || pin_thickness;
-
-        let name_placement;
-        let num_placement;
-
-        if (pin_name_offset > 0) {
-            // Names are placed inside, numbers are placed above.
-            name_placement = hide_pin_names
-                ? undefined
-                : PinLabelInternals.place_inside(
-                      pin_name_offset,
-                      name_thickness,
-                      pin_length,
-                      pin.orientation,
-                  );
-            num_placement = hide_pin_numbers
-                ? undefined
-                : PinLabelInternals.place_above(
-                      text_margin,
-                      pin_thickness,
-                      num_thickness,
-                      pin_length,
-                      pin.orientation,
-                  );
-        } else {
-            // Names are placed above, number are placed below.
-            name_placement = hide_pin_names
-                ? undefined
-                : PinLabelInternals.place_above(
-                      text_margin,
-                      pin_thickness,
-                      name_thickness,
-                      pin_length,
-                      pin.orientation,
-                  );
-            num_placement = hide_pin_numbers
-                ? undefined
-                : PinLabelInternals.place_below(
-                      text_margin,
-                      pin_thickness,
-                      name_thickness,
-                      pin_length,
-                      pin.orientation,
-                  );
-        }
-
-        if (name_placement) {
-            PinLabelInternals.draw(
-                gfx,
-                name,
-                pin.position,
-                name_placement,
-                def.name.effects,
-                gfx.state.stroke,
-            );
-        }
-
-        if (num_placement) {
-            PinLabelInternals.draw(
-                gfx,
-                number,
-                pin.position,
-                num_placement,
-                def.number.effects,
-                gfx.state.stroke,
+            this.#paint_text(
+                placed,
+                def,
+                alternate?.name ?? def.name.text,
+                pin.parent.lib_symbol,
             );
         }
     }
-}
 
-export type PinInfo = {
-    pin: schematic_items.PinInstance;
-    def: schematic_items.PinDefinition;
-    position: Vec2;
-    orientation: PinOrientation;
-};
-type PinOrientation = "right" | "left" | "up" | "down";
-
-/**
- * Converts a rotation to a pin orientation.
- *
- * KiCad saves pin orientation as a rotation, but presents it to the UI and
- * does placement based on the "orientation" which is simply left, right, up,
- * or down.
- */
-function angle_to_orientation(angle_deg: number): PinOrientation {
-    switch (angle_deg) {
-        case 0:
-            return "right";
-        case 90:
-            return "up";
-        case 180:
-            return "left";
-        case 270:
-            return "down";
-        default:
-            throw new Error(`Unexpected pin angle ${angle_deg}`);
-    }
-}
-
-/**
- * Internals used to draw the pin's shape.
- *
- * Note: only exported for the benefit of tests!
- */
-export const PinShapeInternals = {
-    stem(position: Vec2, orientation: PinOrientation, length: number) {
-        const p0 = new Vec2();
-        const dir = new Vec2();
-
-        switch (orientation) {
-            case "up":
-                p0.set(position.x, position.y - length);
-                dir.set(0, 1);
-                break;
-            case "down":
-                p0.set(position.x, position.y + length);
-                dir.set(0, -1);
-                break;
-            case "left":
-                p0.set(position.x - length, position.y);
-                dir.set(1, 0);
-                break;
-            case "right":
-                p0.set(position.x + length, position.y);
-                dir.set(-1, 0);
-                break;
-        }
-
-        return { p0: p0, dir: dir };
-    },
-
-    draw(
-        gfx: Pick<Renderer, "line" | "circle" | "arc">,
-        electrical_type: schematic_items.PinElectricalType,
+    #paint_graphics(
+        placed: PlacedPin,
         shape: schematic_items.PinShape,
-        position: Vec2,
-        p0: Vec2,
-        dir: Vec2,
+        type: schematic_items.PinElectricalType,
     ) {
-        const radius = schematic_items.DefaultValues.pinsymbol_size;
-        const diam = radius * 2;
-        const nc_radius = schematic_items.DefaultValues.target_pin_radius;
+        const color = this.dim_if_needed(this.theme.pin);
+        const width = schematic_items.DefaultValues.line_width;
+        const { lines, circles } = pin_graphics(placed, shape, type);
 
-        if (electrical_type == "no_connect") {
-            gfx.line([p0, position]);
-            gfx.line([
-                position.add(new Vec2(-nc_radius, -nc_radius)),
-                position.add(new Vec2(nc_radius, nc_radius)),
-            ]);
-            gfx.line([
-                position.add(new Vec2(nc_radius, -nc_radius)),
-                position.add(new Vec2(-nc_radius, nc_radius)),
-            ]);
-            return;
+        for (const points of lines) {
+            this.gfx.line(points, width, color);
         }
-
-        const clock_notch = () => {
-            if (!dir.y) {
-                gfx.line([
-                    p0.add(new Vec2(0, radius)),
-                    p0.add(new Vec2(-dir.x * radius, 0)),
-                    p0.add(new Vec2(0, -radius)),
-                ]);
-            } else {
-                gfx.line([
-                    p0.add(new Vec2(radius, 0)),
-                    p0.add(new Vec2(0, -dir.y * radius)),
-                    p0.add(new Vec2(-radius, 0)),
-                ]);
-            }
-        };
-
-        const low_in_tri = () => {
-            if (!dir.y) {
-                gfx.line([
-                    p0.add(new Vec2(dir.x, 0).multiply(diam)),
-                    p0.add(new Vec2(dir.x, -1).multiply(diam)),
-                    p0,
-                ]);
-            } else {
-                gfx.line([
-                    p0.add(new Vec2(0, dir.y).multiply(diam)),
-                    p0.add(new Vec2(-1, dir.y).multiply(diam)),
-                    p0,
-                ]);
-            }
-        };
-
-        switch (shape) {
-            case "line":
-                gfx.line([p0, position]);
-                return;
-            case "inverted":
-                gfx.arc(p0.add(dir.multiply(radius)), radius);
-                gfx.line([p0.add(dir.multiply(diam)), position]);
-                return;
-            case "inverted_clock":
-                gfx.arc(p0.add(dir.multiply(radius)), radius);
-                gfx.line([p0.add(dir.multiply(diam)), position]);
-                clock_notch();
-                return;
-            case "clock":
-                gfx.line([p0, position]);
-                clock_notch();
-                return;
-            case "clock_low":
-            case "edge_clock_high":
-                gfx.line([p0, position]);
-                clock_notch();
-                low_in_tri();
-                break;
-            case "input_low":
-                gfx.line([p0, position]);
-                low_in_tri();
-                break;
-            case "output_low":
-                gfx.line([p0, position]);
-
-                if (!dir.y) {
-                    gfx.line([
-                        p0.sub(new Vec2(0, diam)),
-                        p0.add(new Vec2(dir.x * diam, 0)),
-                    ]);
-                } else {
-                    gfx.line([
-                        p0.sub(new Vec2(diam, 0)),
-                        p0.add(new Vec2(0, dir.y * diam)),
-                    ]);
-                }
-                break;
-            case "non_logic":
-                gfx.line([p0, position]);
-                gfx.line([
-                    p0.sub(
-                        new Vec2(dir.x + dir.y, dir.y - dir.x).multiply(radius),
-                    ),
-                    p0.add(
-                        new Vec2(dir.x + dir.y, dir.y - dir.x).multiply(radius),
-                    ),
-                ]);
-                gfx.line([
-                    p0.sub(
-                        new Vec2(dir.x - dir.y, dir.y + dir.x).multiply(radius),
-                    ),
-                    p0.add(
-                        new Vec2(dir.x - dir.y, dir.y + dir.x).multiply(radius),
-                    ),
-                ]);
-                break;
+        for (const { center, radius } of circles) {
+            this.gfx.arc(
+                center,
+                radius,
+                new Angle(0),
+                new Angle(Math.PI * 2),
+                width,
+                color,
+            );
         }
-    },
-};
+    }
 
-type PinLabelPlacement = {
-    offset: Vec2;
-    h_align: HAlign;
-    v_align: VAlign;
-    orientation: PinOrientation;
-};
-
-/**
- * Internals used to draw the pin's labels (name and number).
- *
- * Note: only exported for the benefit of tests!
- */
-export const PinLabelInternals = {
-    /**
-     * Handles rotating the label position offset based on the pin's orientation
-     */
-    orient_label(
-        offset: Vec2,
-        orientation: PinOrientation,
-        h_align: HAlign,
-        v_align: VAlign,
-    ): PinLabelPlacement {
-        switch (orientation) {
-            case "right":
-                break;
-            case "left":
-                offset.x *= -1;
-                if (h_align == "left") {
-                    h_align = "right";
-                }
-                break;
-            case "up":
-                offset = new Vec2(offset.y, -offset.x);
-                break;
-            case "down":
-                offset = new Vec2(offset.y, offset.x);
-                if (h_align == "left") {
-                    h_align = "right";
-                }
-                break;
-        }
-        return {
-            offset: offset,
-            h_align: h_align,
-            v_align: v_align,
-            orientation: orientation,
-        };
-    },
-
-    /**
-     * Places a label inside the symbol body.  Or to put it another way,
-     * places it to the left side of a pin that's on the right side of a symbol
-     */
-    place_inside(
-        label_offset: number,
-        thickness: number,
-        pin_length: number,
-        orientation: PinOrientation,
-    ): PinLabelPlacement {
-        const offset = new Vec2(label_offset - thickness / 2 + pin_length, 0);
-        return this.orient_label(offset, orientation, "left", "center");
-    },
-
-    /**
-     * Places a label above the pin
-     */
-    place_above(
-        text_margin: number,
-        pin_thickness: number,
-        text_thickness: number,
-        pin_length: number,
-        orientation: PinOrientation,
-    ): PinLabelPlacement {
-        const offset = new Vec2(
-            pin_length / 2,
-            -(text_margin + pin_thickness / 2 + text_thickness / 2),
-        );
-        return this.orient_label(offset, orientation, "center", "bottom");
-    },
-
-    /**
-     * Places a label below the pin
-     */
-    place_below(
-        text_margin: number,
-        pin_thickness: number,
-        text_thickness: number,
-        pin_length: number,
-        orientation: PinOrientation,
-    ): PinLabelPlacement {
-        const offset = new Vec2(
-            pin_length / 2,
-            text_margin + pin_thickness / 2 + text_thickness / 2,
-        );
-        return this.orient_label(offset, orientation, "center", "top");
-    },
-
-    /**
-     * Draw a label
-     *
-     * The placement should be created by calling once of the place_*() methods
-     * first.
-     *
-     */
-    draw(
-        gfx: Renderer,
-        text: string,
-        position: Vec2,
-        placement: PinLabelPlacement,
-        effects: Effects,
-        color: Color,
+    #paint_text(
+        placed: PlacedPin,
+        def: schematic_items.PinDefinition,
+        name: string,
+        lib_symbol: schematic_items.LibSymbol,
     ) {
-        const edatext = new EDAText(text);
+        const placements = pin_text_placements(
+            placed,
+            lib_symbol.pin_names.offset,
+        );
 
-        edatext.apply_effects(effects);
-        edatext.attributes.h_align = placement.h_align;
-        edatext.attributes.v_align = placement.v_align;
-        edatext.attributes.color = color;
-        edatext.text_pos = position.add(placement.offset).multiply(10000);
-
-        switch (placement.orientation) {
-            case "up":
-            case "down":
-                edatext.text_angle = Angle.from_degrees(90);
-                break;
-            case "left":
-            case "right":
-                edatext.text_angle = Angle.from_degrees(0);
-                break;
+        // A name of "~" means the pin has no name.
+        if (!lib_symbol.pin_names.hide && name && name != "~") {
+            this.draw_text(
+                name,
+                def.name.effects,
+                placements.name,
+                this.dim_if_needed(this.theme.pin_name),
+            );
         }
 
-        StrokeFont.default().draw(
-            gfx,
-            edatext.shown_text,
-            edatext.text_pos,
-            edatext.attributes,
-        );
-    },
-};
+        if (!lib_symbol.pin_numbers.hide && def.number.text) {
+            this.draw_text(
+                def.number.text,
+                def.number.effects,
+                placements.number,
+                this.dim_if_needed(this.theme.pin_number),
+            );
+        }
+    }
+}
