@@ -10,12 +10,12 @@
  * Each item class has a corresponding Painter implementation.
  */
 
-import { Angle, Arc, Matrix3, Vec2 } from "../../base/math";
+import { Angle, Arc, BBox, Matrix3, Vec2 } from "../../base/math";
 import * as log from "../../base/log";
 import { Circle, Color, Polygon, Polyline, Renderer } from "../../graphics";
 import { StrokeParams } from "../../kicad/common.ts";
 import * as board_items from "../../kicad/board";
-import { EDAText, StrokeFont, TextAttributes } from "../../kicad/text";
+import { EDAText, StrokeFont, StrokeGlyph } from "../../kicad/text";
 import { DocumentPainter, ItemPainter, StrokePainter } from "../base/painter";
 import { ViewLayerNames } from "../base/view-layers";
 import {
@@ -62,49 +62,6 @@ abstract class GraphicItemPainter extends BoardItemPainter {
     }
 }
 
-abstract class NetNameItemPainter extends BoardItemPainter {
-    // Drawing the netname on `center` in region `region`
-    protected draw_net_name(
-        net_name: string,
-        center: Vec2,
-        text_width: number,
-        max_font_size: number,
-        color: Color,
-    ) {
-        const text_attr = new TextAttributes();
-
-        const text_center = center.copy().multiply(10000);
-
-        // Keep the font size consistent for short text.
-        const stroke_width = text_width / Math.max(net_name.length, 3);
-
-        // Use a smaller text size to improve visibility.
-        const netname_font_size =
-            Math.min(max_font_size, stroke_width) * 10000 * 0.95;
-
-        text_attr.color = color;
-        text_attr.bold = true;
-        text_attr.size = new Vec2(netname_font_size, netname_font_size);
-        text_attr.stroke_width = netname_font_size / 8;
-
-        // Mirror the text if the board is flipped.
-        text_attr.mirrored = this.gfx.state.flipped;
-
-        StrokeFont.default().draw(this.gfx, net_name, text_center, text_attr);
-    }
-
-    // Get displayed netname, e.g. "Sheet/Name" -> "Name"
-    protected static displayed_netname(
-        netname: string | undefined,
-    ): string | undefined {
-        if (!netname) return undefined;
-
-        const level_names = netname.split("/");
-
-        return level_names.slice(-1)[0]!;
-    }
-}
-
 class LinePainter extends GraphicItemPainter {
     classes = [board_items.GrLine, board_items.FpLine];
 
@@ -132,8 +89,8 @@ class RectPainter extends GraphicItemPainter {
 
         const color = layer.color;
 
-        // use the same order as KiCad
-        // https://gitlab.com/kicad/code/develop/-/blob/master/common/eda_shape.cpp#L1616
+        // start, along x, end, back along x: the order kicad-cli 9's board
+        // SVG walks a rectangle in, which sets where each side's dashes fall.
         const points = [
             r.start,
             new Vec2(r.end.x, r.start.y),
@@ -232,7 +189,7 @@ class CirclePainter extends GraphicItemPainter {
     }
 }
 
-class TraceSegmentPainter extends NetNameItemPainter {
+class TraceSegmentPainter extends BoardItemPainter {
     classes = [board_items.LineSegment];
 
     layers_for(item: board_items.LineSegment) {
@@ -249,7 +206,7 @@ class TraceSegmentPainter extends NetNameItemPainter {
     }
 }
 
-class TraceArcPainter extends NetNameItemPainter {
+class TraceArcPainter extends BoardItemPainter {
     classes = [board_items.ArcSegment];
 
     layers_for(item: board_items.ArcSegment) {
@@ -267,7 +224,7 @@ class TraceArcPainter extends NetNameItemPainter {
     }
 }
 
-class ViaPainter extends NetNameItemPainter {
+class ViaPainter extends BoardItemPainter {
     classes = [board_items.Via];
 
     layers_for(v: board_items.Via): string[] {
@@ -380,11 +337,228 @@ class ZonePainter extends BoardItemPainter {
     }
 }
 
-class PadPainter extends NetNameItemPainter {
+/*
+ * Pad labels: the pad number and net name drawn inside each pad. This rule is
+ * our own, chosen for legibility; it does not reproduce any other tool's.
+ *
+ * - A label stays inside the pad's shape, rounded corners and oval ends
+ *   included, less a margin of a tenth of the pad's short side all round.
+ * - It runs along the pad's long axis: for a square pad, the axis nearer the
+ *   screen's horizontal; for a round pad, the horizontal itself. It reads
+ *   left to right, or bottom to top when vertical, whatever the footprint's
+ *   rotation or the view's flip.
+ * - Two lines, the number above the net name, each as large as fits its half
+ *   of the pad and its own length. A no-connect pad has a cross in place of
+ *   the net name.
+ * - No text is larger than `max_size` of the pad's short side (a capital's
+ *   height, descenders aside), and none is drawn under `min_size`: if either
+ *   line of the two would be, the net name (or cross) alone is tried, then
+ *   the number alone, then nothing.
+ * - A net name shows only its last hierarchical segment, the text after the
+ *   last "/" outside brackets: "/Power/+3V3" shows "+3V3", while
+ *   "Net-(U1-PA9/TX)" stays whole.
+ */
+const pad_label = {
+    /** Clearance to the pad's edge, as a fraction of its short side. */
+    margin: 0.1,
+    /** Space between the two lines, as a fraction of the short side. */
+    gap: 0.1,
+    /** Largest text size, as a fraction of the short side. */
+    max_size: 0.45,
+    /** Pen width, as a fraction of the text size. */
+    pen: 0.15,
+    /** Smallest text size drawn, in millimetres. */
+    min_size: 0.08,
+};
+
+/**
+ * A label line at text size 1, centred on the box its stroke centre-lines
+ * span, which is `w` wide and `h` tall.
+ */
+interface LabelInk {
+    strokes: Vec2[][];
+    w: number;
+    h: number;
+}
+
+/** The no-connect cross: a square as tall as a capital. */
+const no_connect_ink: LabelInk = {
+    strokes: [
+        [new Vec2(-0.5, -0.5), new Vec2(0.5, 0.5)],
+        [new Vec2(-0.5, 0.5), new Vec2(0.5, -0.5)],
+    ],
+    w: 1,
+    h: 1,
+};
+
+const label_inks = new Map<string, LabelInk | null>();
+
+/** A line of text in the stroke font, or null if it draws nothing. */
+function text_ink(text: string): LabelInk | null {
+    let ink = label_inks.get(text);
+    if (ink !== undefined) {
+        return ink;
+    }
+
+    const font = StrokeFont.default();
+    const layout = font.layout_line(text, new Vec2(1, 1), false);
+    const strokes = layout.glyphs.flatMap((g) => (g as StrokeGlyph).strokes);
+    const bar_y = -font.compute_overbar_vertical_position(1);
+    for (const [x0, x1] of layout.overbars) {
+        strokes.push([new Vec2(x0, bar_y), new Vec2(x1, bar_y)]);
+    }
+
+    ink = null;
+    const points = strokes.flat();
+    if (points.length) {
+        const box = BBox.from_points(points);
+        const c = box.center;
+        ink = {
+            strokes: strokes.map((s) => s.map((p) => p.sub(c))),
+            w: box.w,
+            h: box.h,
+        };
+    }
+    label_inks.set(text, ink);
+    return ink;
+}
+
+/** A net name's last hierarchical segment; see the pad label rule. */
+function net_label(name: string): string {
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < name.length; i++) {
+        const c = name[i];
+        if (c == "(" || c == "[" || c == "{") {
+            depth++;
+        } else if (c == ")" || c == "]" || c == "}") {
+            depth = Math.max(depth - 1, 0);
+        } else if (c == "/" && depth == 0) {
+            start = i + 1;
+        }
+    }
+    return start < name.length ? name.slice(start) : name;
+}
+
+/**
+ * Where a label may go: a rounded rectangle centred on the pad, `hl` and `hs`
+ * its half extents along and across the text, `r` its corner radius.
+ */
+interface LabelArea {
+    hl: number;
+    hs: number;
+    r: number;
+}
+
+/**
+ * The pad's shape as a rounded rectangle in its own frame (half sides and
+ * corner radius), inside the shape drawn; null for shapes without labels.
+ */
+function pad_outline(pad: board_items.Pad) {
+    const shape = pad.shape == "custom" ? pad.options?.anchor : pad.shape;
+    const hx = pad.size.x / 2;
+    const hy = pad.size.y / 2;
+    const rounding = 2 * Math.min(hx, hy) * (pad.roundrect_rratio ?? 0);
+    switch (shape) {
+        case "circle":
+            return { hx, hy: hx, r: hx };
+        case "rect":
+            return { hx, hy, r: 0 };
+        case "oval":
+            return { hx, hy, r: Math.min(hx, hy) };
+        case "roundrect":
+            return { hx, hy, r: rounding };
+        case "trapezoid": {
+            // Bounded by the trapezoid's narrower ends.
+            const delta = pad.rect_delta ?? new Vec2(0, 0);
+            return {
+                hx: hx - Math.abs(delta.y) / 2,
+                hy: hy - Math.abs(delta.x) / 2,
+                r: rounding,
+            };
+        }
+        default:
+            return null;
+    }
+}
+
+/**
+ * The largest text size, up to `largest`, at which `ink`, drawn with the
+ * label pen and centred `v` across the area, stays inside the area and
+ * within the band `band` tall around `v`.
+ */
+function fit_label_size(
+    ink: LabelInk,
+    area: LabelArea,
+    v: number,
+    band: number,
+    largest: number,
+) {
+    // The ink's box at size s is s * w by s * h.
+    const w = ink.w + pad_label.pen;
+    const h = ink.h + pad_label.pen;
+    const size = Math.min(largest, band / h, (2 * area.hl) / w);
+    if (!(size > 0)) {
+        return 0;
+    }
+
+    // Within the straight sides, the box's outer corner can still poke out of
+    // a rounded corner: dx, dy past the corner's centre must stay within r.
+    const y = Math.abs(v);
+    const cx = area.hl - area.r;
+    const cy = area.hs - area.r;
+    const dx = (size * w) / 2 - cx;
+    const dy = y + (size * h) / 2 - cy;
+    if (dx <= 0 || dy <= 0 || dx * dx + dy * dy <= area.r * area.r) {
+        return size;
+    }
+
+    // The size at which the corner meets the arc: the larger root of
+    // (s w/2 - cx)^2 + (y + s h/2 - cy)^2 = r^2.
+    const a = (w * w + h * h) / 4;
+    const b = h * (y - cy) - w * cx;
+    const c = cx * cx + (y - cy) ** 2 - area.r ** 2;
+    return (-b + Math.sqrt(Math.max(b * b - 4 * a * c, 0))) / (2 * a);
+}
+
+/**
+ * Sizes and places label lines, stacked in order across the area; null if
+ * any would be smaller than `pad_label.min_size`.
+ */
+function place_label_lines(lines: LabelInk[], area: LabelArea, short: number) {
+    // Equal bands across the area, one per line, `gap` apart.
+    const gap = lines.length > 1 ? pad_label.gap * short : 0;
+    const band = (2 * area.hs - gap) / lines.length;
+    const largest = pad_label.max_size * short;
+
+    // Fit each line centred in its own band...
+    const sizes: number[] = [];
+    for (const [i, ink] of lines.entries()) {
+        const v = (i - (lines.length - 1) / 2) * (band + gap);
+        const size = fit_label_size(ink, area, v, band, largest);
+        if (size < pad_label.min_size) {
+            return null;
+        }
+        sizes.push(size);
+    }
+
+    // ...then close the lines up about the middle. Each moves towards it,
+    // which keeps it inside: the area is convex and symmetric.
+    const heights = lines.map((ink, i) => sizes[i]! * (ink.h + pad_label.pen));
+    const total =
+        heights.reduce((sum, h) => sum + h, 0) + gap * (lines.length - 1);
+    let v = -total / 2;
+    return lines.map((ink, i) => {
+        const placed = { ink, size: sizes[i]!, v: v + heights[i]! / 2 };
+        v += heights[i]! + gap;
+        return placed;
+    });
+}
+
+class PadPainter extends BoardItemPainter {
     classes = [board_items.Pad];
 
     layers_for(pad: board_items.Pad): string[] {
-        // TODO: Port KiCad's logic over.
         const layers: string[] = [];
 
         for (const layer of pad.layers) {
@@ -462,77 +636,14 @@ class PadPainter extends NetNameItemPainter {
             layer.name == LayerNames.pads_back_netname ||
             layer.name == LayerNames.pad_holes_netname;
 
-        const net_name = PadPainter.pad_netname(pad);
-
         if (is_netname_layer) {
-            // See also:
-            // https://gitlab.com/kicad/code/kicad/-/blob/master/pcbnew/pcb_painter.cpp#L1379
-            const pad_size = PadPainter.get_pad_orth_size(pad);
-
-            // Calculate the maximum text size and rotation angle
-            let max_width = pad_size.x;
-            let max_font_size = pad_size.y;
-            let text_rotated = -pad.parent.at.rotation;
-            if (pad_size.x < pad_size.y * 0.95) {
-                text_rotated += 90;
-                max_width = pad_size.y;
-                max_font_size = pad_size.x;
-            }
-
-            max_font_size = Math.min(max_font_size, 10);
-
-            // Keep the text upright
-            const pad_rotate = pad.at.rotation;
-            while (pad_rotate + text_rotated > 90) {
-                text_rotated -= 180;
-            }
-            while (pad_rotate + text_rotated <= -90) {
-                text_rotated += 180;
-            }
-
-            // Calculate the offset for pad number and net name if necessary
-            let y_offset_pad_num = 0;
-            let y_offset_pad_net = 0;
-            if (net_name !== undefined && pad.number !== "") {
-                // 3 gives better visibility than kicad's default value of 2.5
-                max_font_size = max_font_size / 3;
-                y_offset_pad_net = max_font_size / 1.4;
-                y_offset_pad_num = max_font_size / 1.7;
-            }
-
-            // Keep the text centered
             if (pad.drill?.offset) {
                 this.gfx.state.matrix.translate_self(
                     pad.drill.offset.x,
                     pad.drill.offset.y,
                 );
             }
-
-            // Apply the text rotation
-            const rotate_mat = Matrix3.rotation(Angle.deg_to_rad(text_rotated));
-            this.gfx.state.multiply(rotate_mat);
-
-            // Render the pad_number
-            if (pad.number !== "") {
-                this.draw_net_name(
-                    pad.number,
-                    new Vec2(0, -y_offset_pad_num),
-                    max_width,
-                    max_font_size,
-                    color,
-                );
-            }
-
-            // Render netname
-            if (net_name !== undefined) {
-                this.draw_net_name(
-                    net_name,
-                    new Vec2(0, y_offset_pad_net),
-                    max_width,
-                    max_font_size,
-                    color,
-                );
-            }
+            this.paint_label(pad, color);
         } else if (is_hole_layer && pad.drill != null) {
             if (!pad.drill.oval) {
                 const drill_pos = center;
@@ -692,37 +803,117 @@ class PadPainter extends NetNameItemPainter {
         this.gfx.state.pop();
     }
 
-    // Get displayed netname for a pad, if it's no_connect, return "X"
-    private static pad_netname(pad: board_items.Pad): string | undefined {
-        // Display "X" for no_connect pads
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/pcbnew/pcb_painter.cpp#L1305
-        if (pad.pintype !== undefined && pad.pintype.includes("no_connect")) {
-            return "X";
+    /** Draws the pad's label, centred on the pad's shape; see the rule above. */
+    private paint_label(pad: board_items.Pad, color: Color) {
+        const outline = pad_outline(pad);
+        if (!outline) {
+            return;
         }
 
-        return PadPainter.displayed_netname(pad.netname);
-    }
-
-    // Get pad outline size
-    private static get_pad_orth_size(pad: board_items.Pad): Vec2 {
-        const pad_size = pad.size.copy();
-
-        const obj_angle = pad.parent.at.rotation + 36000;
-
-        // Swap x with y if pad is not 0 deg or 180 deg
-        if (obj_angle % 180 !== 0) {
-            [pad_size.x, pad_size.y] = [pad_size.y, pad_size.x];
+        const number = pad.number ? text_ink(pad.number) : null;
+        let net: LabelInk | null = null;
+        if (pad.pintype?.includes("no_connect")) {
+            net = no_connect_ink;
+        } else if (pad.netname) {
+            net = text_ink(net_label(pad.netname));
         }
 
-        // Don't allow a 45° rotation to bloat a pad's bounding box unnecessarily
-        const limit = Math.min(pad_size.x, pad_size.y) * 1.1;
+        // The pad's own directions as seen on screen, mirrored in a flipped
+        // view.
+        const m = this.gfx.state.matrix;
+        const origin = m.transform(new Vec2(0, 0));
+        const mirror = this.gfx.state.flipped ? -1 : 1;
+        const on_screen = (v: Vec2) => {
+            const d = m.transform(v).sub(origin);
+            return new Vec2(d.x * mirror, d.y);
+        };
 
-        if (pad_size.x > limit && pad_size.y > limit) {
-            pad_size.x = limit;
-            pad_size.y = limit;
+        // The text's direction in the pad's frame: the long axis, whichever
+        // way reads best, or for a round pad the screen's horizontal.
+        let along: Vec2;
+        const round = outline.hx == outline.hy && outline.r >= outline.hx;
+        if (round) {
+            const sx = on_screen(new Vec2(1, 0));
+            const sy = on_screen(new Vec2(0, 1));
+            along = new Vec2(sy.y, -sx.y);
+            along = along.multiply(1 / along.magnitude);
+            if (on_screen(along).x < 0) {
+                along = along.multiply(-1);
+            }
+        } else {
+            const axes: Vec2[] = [];
+            if (outline.hx >= outline.hy) {
+                axes.push(new Vec2(1, 0), new Vec2(-1, 0));
+            }
+            if (outline.hy >= outline.hx) {
+                axes.push(new Vec2(0, 1), new Vec2(0, -1));
+            }
+            // Most rightward on screen; of two equally so, the upward.
+            const eps = 1e-9;
+            let best = on_screen(axes[0]!);
+            along = axes[0]!;
+            for (const axis of axes.slice(1)) {
+                const s = on_screen(axis);
+                if (
+                    s.x > best.x + eps ||
+                    (s.x > best.x - eps && s.y < best.y)
+                ) {
+                    best = s;
+                    along = axis;
+                }
+            }
         }
 
-        return pad_size;
+        // Down the text: the perpendicular that is clockwise of `along` on
+        // screen, so the text is never seen mirrored.
+        let across = new Vec2(-along.y, along.x);
+        if (on_screen(along).cross(on_screen(across)) < 0) {
+            across = across.multiply(-1);
+        }
+
+        const [hl, hs] =
+            Math.abs(along.x) >= Math.abs(along.y)
+                ? [outline.hx, outline.hy]
+                : [outline.hy, outline.hx];
+        const short = 2 * Math.min(outline.hx, outline.hy);
+        const margin = pad_label.margin * short;
+        const area = {
+            hl: hl - margin,
+            hs: hs - margin,
+            r: Math.max(outline.r - margin, 0),
+        };
+
+        const choices: LabelInk[][] = [];
+        if (number && net) {
+            choices.push([number, net]);
+        }
+        if (net) {
+            choices.push([net]);
+        }
+        if (number) {
+            choices.push([number]);
+        }
+
+        for (const lines of choices) {
+            const placed = place_label_lines(lines, area, short);
+            if (!placed) {
+                continue;
+            }
+            for (const { ink, size, v } of placed) {
+                for (const stroke of ink.strokes) {
+                    this.gfx.line(
+                        stroke.map((p) =>
+                            along
+                                .multiply(p.x * size)
+                                .add(across.multiply(v + p.y * size)),
+                        ),
+                        pad_label.pen * size,
+                        color,
+                    );
+                }
+            }
+            return;
+        }
     }
 }
 
@@ -1057,93 +1248,79 @@ class DimensionPainter extends BoardItemPainter {
         this.paint_text(text);
     }
 
+    /**
+     * An aligned or orthogonal dimension: two extension lines, the crossbar
+     * and an arrowhead at each end of it, then its text where the file puts
+     * it. Measured against KiCad 9 (pcbnew's shapes for 25 dimensions, both
+     * kinds, heights of both signs and zero, crossbars beyond and between
+     * the points, both orientations, custom styles; checked on the plotted
+     * SVG):
+     *  - aligned: the crossbar is the measured segment moved `height` along
+     *    its normal (+y for a segment towards +x); each extension line runs
+     *    along that normal, on the height's side (the -normal side at 0),
+     *    from `extension_offset` off its point to `extension_height` past
+     *    the crossbar;
+     *  - orthogonal: the crossbar is horizontal at y = start.y + height
+     *    (orientation 0) or vertical at x = start.x + height (1), spanning
+     *    the two points; each extension line runs from its point towards
+     *    the crossbar, the same offset and overshoot (nothing when the point
+     *    is on the crossbar's line);
+     *  - each arrowhead is two strokes `arrow_length` long from the crossbar
+     *    end, 27.5 degrees either side of the crossbar, pointing out.
+     * A missing extension_offset is 0 and extension_height 0.58642.
+     */
     paint_linear(layer: ViewLayer, d: board_items.Dimension) {
         const thickness = d.style.thickness ?? 0.2;
+        const offset = d.style.extension_offset ?? 0;
+        const overshoot = d.style.extension_height ?? 0.58642;
+        const arrow = d.style.arrow_length;
+        const line = (pts: Vec2[]) =>
+            this.gfx.line(pts, thickness, layer.color);
+        const extension = (point: Vec2, foot: Vec2, dir: Vec2) =>
+            line([
+                point.add(dir.multiply(offset)),
+                foot.add(dir.multiply(overshoot)),
+            ]);
 
-        let extension = new Vec2();
-        let xbar_start = new Vec2();
-        let xbar_end = new Vec2();
-
-        // See PCB_DIM_ORTHOGONAL::updateGeometry
+        let a: Vec2;
+        let b: Vec2;
         if (d.type == "orthogonal") {
-            if (d.orientation == 0) {
-                extension = new Vec2(0, d.height);
-                xbar_start = d.start.add(extension);
-                xbar_end = new Vec2(d.end.x, xbar_start.y);
-            } else {
-                extension = new Vec2(d.height, 0);
-                xbar_start = d.start.add(extension);
-                xbar_end = new Vec2(xbar_start.x, d.end.y);
-            }
+            const horizontal = d.orientation == 0;
+            a = horizontal
+                ? new Vec2(d.start.x, d.start.y + d.height)
+                : new Vec2(d.start.x + d.height, d.start.y);
+            b = horizontal ? new Vec2(d.end.x, a.y) : new Vec2(a.x, d.end.y);
+            // A unit step along the axis from the point to its foot (zero
+            // when the point is on the crossbar's line).
+            const towards = (from: Vec2, to: Vec2) =>
+                new Vec2(Math.sign(to.x - from.x), Math.sign(to.y - from.y));
+            extension(d.start, a, towards(d.start, a));
+            extension(d.end, b, towards(d.end, b));
+        } else {
+            const along = d.end.sub(d.start).normalize();
+            const normal = new Vec2(-along.y, along.x);
+            a = d.start.add(normal.multiply(d.height));
+            b = d.end.add(normal.multiply(d.height));
+            const side = normal.multiply(d.height > 0 ? 1 : -1);
+            extension(d.start, a, side);
+            extension(d.end, b, side);
         }
-        // See PCB_DIM_ALIGNED::updateGeometry
-        else {
-            const dimension = d.end.sub(d.start);
-            if (d.height > 0) {
-                extension = new Vec2(-dimension.y, dimension.x);
-            } else {
-                extension = new Vec2(dimension.y, -dimension.x);
-            }
+        line([a, b]);
 
-            const xbar_distance = extension
-                .resize(d.height)
-                .multiply(Math.sign(d.height));
-
-            xbar_start = d.start.add(xbar_distance);
-            xbar_end = d.end.add(xbar_distance);
+        const spread = Angle.deg_to_rad(27.5);
+        const [cos, sin] = [Math.cos(spread), Math.sin(spread)];
+        for (const [tip, back] of [
+            [a, b],
+            [b, a],
+        ] as const) {
+            const u = back.sub(tip).normalize().multiply(arrow);
+            line([
+                tip.add(new Vec2(u.x * cos + u.y * sin, u.y * cos - u.x * sin)),
+                tip,
+                tip.add(new Vec2(u.x * cos - u.y * sin, u.y * cos + u.x * sin)),
+            ]);
         }
 
-        // Draw extensions
-        const extension_height =
-            Math.abs(d.height) -
-            d.style.extension_offset +
-            d.style.extension_height;
-
-        // First extension line
-        let ext_start = d.start.add(extension.resize(d.style.extension_offset));
-        let ext_end = ext_start.add(extension.resize(extension_height));
-        this.gfx.line([ext_start, ext_end], thickness, layer.color);
-
-        // Second extension line
-        ext_start = d.end.add(extension.resize(d.style.extension_offset));
-        ext_end = ext_start.add(extension.resize(extension_height));
-        this.gfx.line([ext_start, ext_end], thickness, layer.color);
-
-        // Draw crossbar
-        // TODO: KiCad checks to see if the text overlaps the crossbar and
-        // conditionally splits or hides the crossbar.
-        this.gfx.line([xbar_start, xbar_end], thickness, layer.color);
-
-        // Arrows
-        const xbar_angle = xbar_end.sub(xbar_start).angle.negative();
-        const arrow_angle = Angle.from_degrees(27.5);
-        const arrow_end_pos = xbar_angle
-            .add(arrow_angle)
-            .rotate_point(new Vec2(d.style.arrow_length, 0));
-        const arrow_end_neg = xbar_angle
-            .sub(arrow_angle)
-            .rotate_point(new Vec2(d.style.arrow_length, 0));
-
-        this.gfx.line(
-            [
-                xbar_start.add(arrow_end_neg),
-                xbar_start,
-                xbar_start.add(arrow_end_pos),
-            ],
-            thickness,
-            layer.color,
-        );
-        this.gfx.line(
-            [
-                xbar_end.sub(arrow_end_neg),
-                xbar_end,
-                xbar_end.sub(arrow_end_pos),
-            ],
-            thickness,
-            layer.color,
-        );
-
-        // Text
         this.paint_text(this.make_text(layer, d));
     }
 

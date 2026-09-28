@@ -81,40 +81,48 @@ export class Arc {
         return new Arc(center, radius, arc_start, arc_end, width, direction);
     }
 
+    /**
+     * The arc round `center` from `start` to `end`, sweeping the way angles
+     * grow (clockwise as drawn, +y being down): its start angle is
+     * `start`'s direction, in (-180, 180], and its end angle the start plus
+     * a sweep in (0, 360], a whole circle when `start` and `end` coincide.
+     * Measured against KiCad 9 (pcbnew's CalcArcAngles on 342 arcs: random
+     * centres, radii and ends, and every pair of the axes and 45 degrees).
+     */
     static from_center_start_end(
         center: Vec2,
         start: Vec2,
         end: Vec2,
         width: number,
     ) {
-        // See EDA_SHAPE::CalcArcAngles - normalizes the start and end angle so
-        // that start < end and their values are between -360 and +360.
-        const radius = start.sub(center).magnitude;
         const start_radial = start.sub(center);
-        const end_radial = end.sub(center);
-        let start_angle = start_radial.kicad_angle;
-        let end_angle = end_radial.kicad_angle;
-
-        if (end_angle.degrees == start_angle.degrees) {
-            // This is a circle, not a zero-length arc.
-            end_angle.degrees = start_angle.degrees + 360;
+        const start_angle = start_radial.kicad_angle;
+        let sweep = end.sub(center).kicad_angle.radians - start_angle.radians;
+        if (sweep <= 0) {
+            sweep += 2 * Math.PI;
         }
+        return new Arc(
+            center,
+            start_radial.magnitude,
+            start_angle,
+            new Angle(start_angle.radians + sweep),
+            width,
+        );
+    }
 
-        if (start_angle.degrees > end_angle.degrees) {
-            if (end_angle.degrees < 0) {
-                end_angle = end_angle.normalize();
-            } else {
-                start_angle = start_angle
-                    .normalize()
-                    .sub(Angle.from_degrees(-360));
-            }
-        }
-
-        return new Arc(center, radius, start_angle, end_angle, width);
+    /**
+     * The radial at `angle`: angles grow clockwise as drawn (+y being down),
+     * the way to_polyline() walks the arc.
+     */
+    private radial_at(angle: Angle) {
+        return new Vec2(
+            Math.cos(angle.radians) * this.radius,
+            Math.sin(angle.radians) * this.radius,
+        );
     }
 
     get start_radial() {
-        return this.start_angle.rotate_point(new Vec2(this.radius, 0));
+        return this.radial_at(this.start_angle);
     }
 
     get start_point() {
@@ -122,7 +130,7 @@ export class Arc {
     }
 
     get end_radial() {
-        return this.end_angle.rotate_point(new Vec2(this.radius, 0));
+        return this.radial_at(this.end_angle);
     }
 
     get end_point() {
@@ -136,7 +144,7 @@ export class Arc {
     }
 
     get mid_radial() {
-        return this.mid_angle.rotate_point(new Vec2(this.radius, 0));
+        return this.radial_at(this.mid_angle);
     }
 
     get mid_point() {
@@ -148,46 +156,34 @@ export class Arc {
     }
 
     /**
-     * Approximate the Arc using a polyline
+     * Approximate the Arc using a polyline. It runs from the smaller angle
+     * to the larger, or the other way for a counter-clockwise arc, and ends
+     * on exactly start_point and end_point.
      */
     to_polyline(): Vec2[] {
         const points: Vec2[] = [];
-        let start = this.start_angle.radians;
-        let end = this.end_angle.radians;
-
-        if (start > end) {
-            [end, start] = [start, end];
-        }
-
-        // TODO: Pull KiCad's logic for this, since it adds more segments the
-        // larger the arc is.
-        for (let theta = start; theta < end; theta += Math.PI / 32) {
-            points.push(
-                new Vec2(
-                    this.center.x + Math.cos(theta) * this.radius,
-                    this.center.y + Math.sin(theta) * this.radius,
-                ),
+        const lo = Math.min(this.start_angle.radians, this.end_angle.radians);
+        const hi = Math.max(this.start_angle.radians, this.end_angle.radians);
+        const at = (theta: number) =>
+            new Vec2(
+                this.center.x + Math.cos(theta) * this.radius,
+                this.center.y + Math.sin(theta) * this.radius,
             );
+
+        // TODO: step by a chord-error tolerance rather than a fixed angle,
+        // so that larger arcs get more segments.
+        for (let theta = lo; theta < hi; theta += Math.PI / 32) {
+            points.push(at(theta));
         }
 
-        let last_angle;
+        const far_end = at(hi);
+        if (!far_end.equals(points[points.length - 1])) {
+            points.push(far_end);
+        }
+
         if (this.direction === "counter-clockwise") {
-            // for a counter-clockwise arc, it was drawn from the endpoint to the start
-            // so we need reverse the points
+            // Drawn from the end back to the start.
             points.reverse();
-            last_angle = start;
-        } else {
-            last_angle = end;
-        }
-
-        // Add the last point if needed.
-        const last_point = new Vec2(
-            this.center.x + Math.cos(last_angle) * this.radius,
-            this.center.y + Math.sin(last_angle) * this.radius,
-        );
-
-        if (!last_point.equals(points[points.length - 1])) {
-            points.push(last_point);
         }
 
         return points;
@@ -203,33 +199,22 @@ export class Arc {
     }
 
     /**
-     * Get a bounding box that encloses the entire arc.
+     * Get a bounding box that encloses the entire arc: its two ends plus
+     * every axis direction (a multiple of 90 degrees) the sweep passes
+     * through, where the circle reaches its extremes.
      */
     get bbox(): BBox {
-        // An arc's bbox contains at least three points: the radial for the
-        // start angle, the radial for the end angle, and the radial inbetween.
-        // However, that doesn't cover all cases. Whenever the arc crosses an
-        // axis, the radial at that axis must also be included.
-        const points = [this.start_point, this.mid_point, this.end_point];
+        const points = [this.start_point, this.end_point];
 
-        if (this.start_angle.degrees < 0 && this.end_angle.degrees >= 0) {
-            points.push(this.center.add(new Vec2(this.radius, 0)));
-        }
-
-        if (this.start_angle.degrees < 90 && this.end_angle.degrees >= 90) {
-            points.push(this.center.add(new Vec2(0, this.radius)));
-        }
-
-        if (this.start_angle.degrees < 180 && this.end_angle.degrees >= 180) {
-            points.push(this.center.add(new Vec2(-this.radius, 0)));
-        }
-
-        if (this.start_angle.degrees < 270 && this.end_angle.degrees >= 270) {
-            points.push(this.center.add(new Vec2(0, this.radius)));
-        }
-
-        if (this.start_angle.degrees < 360 && this.end_angle.degrees >= 360) {
-            points.push(this.center.add(new Vec2(0, this.radius)));
+        const quarter = Math.PI / 2;
+        const lo = Math.min(this.start_angle.radians, this.end_angle.radians);
+        const hi = Math.max(this.start_angle.radians, this.end_angle.radians);
+        const first = Math.ceil(lo / quarter);
+        // Past four quarters the directions repeat.
+        const last = Math.min(Math.floor(hi / quarter), first + 3);
+        for (let k = first; k <= last; k++) {
+            const axis = this.radial_at(new Angle(k * quarter));
+            points.push(this.center.add(axis));
         }
 
         return BBox.from_points(points);

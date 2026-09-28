@@ -96,39 +96,16 @@ export class Vec2 {
     }
 
     /**
-     * KiCad has to be weird about this, ofc.
+     * The direction as KiCad reports it: atan2's, except that a vector
+     * along -x is -180 degrees rather than 180, and the zero vector is 0.
+     * Measured on KiCad 9's arc start angles (pcbnew's GetArcAngleStart)
+     * along the axes and diagonals and in 250 other directions.
      */
     get kicad_angle(): Angle {
-        // See explicit EDA_ANGLE( const VECTOR2D& aVector )
-        if (this.x == 0 && this.y == 0) {
-            return new Angle(0);
-        } else if (this.y == 0) {
-            if (this.x >= 0) {
-                return new Angle(0);
-            } else {
-                return Angle.from_degrees(-180);
-            }
-        } else if (this.x == 0) {
-            if (this.y >= 0) {
-                return Angle.from_degrees(90);
-            } else {
-                return Angle.from_degrees(-90);
-            }
-        } else if (this.x == this.y) {
-            if (this.x >= 0) {
-                return Angle.from_degrees(45);
-            } else {
-                return Angle.from_degrees(-135);
-            }
-        } else if (this.x == -this.y) {
-            if (this.x >= 0) {
-                return Angle.from_degrees(-45);
-            } else {
-                return Angle.from_degrees(135);
-            }
-        } else {
-            return this.angle;
+        if (this.y == 0 && this.x <= 0) {
+            return this.x == 0 ? new Angle(0) : Angle.from_degrees(-180);
         }
+        return this.angle;
     }
 
     /**

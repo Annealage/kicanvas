@@ -135,100 +135,65 @@ export class DocumentPainter {
  * Stroke painter (solid, dash, etc.)
  */
 export class StrokePainter {
+    /**
+     * Draw polyline `lines` in `stroke_style`, handing each solid run to
+     * `draw_line`. A patterned stroke starts its pattern afresh on every side
+     * of the polyline, and a piece running past a side's end is cut short
+     * there, as kicad-cli 9's board SVG draws dashed lines, rectangles and
+     * polygons.
+     */
     static line(
         lines: Vec2[],
         width: number,
         stroke_style: StrokeParams,
         draw_line: (lines: Vec2[]) => void,
     ) {
-        // reference implementation:
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/stroke_params.cpp#L48
-        // https://gitlab.com/kicad/code/develop/-/blob/master/pcbnew/pcb_painter.cpp#L2236
-
-        const stroke_type = stroke_style.stroke;
-
-        // solid line
-        if (stroke_type.type === "solid" || stroke_type.type === "default") {
+        const pattern = StrokePainter.pattern(width, stroke_style);
+        // A zero width gives zero-length pieces: draw such a stroke solid.
+        if (!pattern || !(width > 0)) {
             draw_line(lines);
             return;
         }
 
-        // dot, dash, dash_dot, dash_dot_dot
-        for (const [start, end] of StrokePainter.windowed2_iter(lines)) {
-            this.line_helper(start, end!, width, stroke_style, draw_line);
-        }
-    }
-
-    private static line_helper(
-        start: Vec2,
-        end: Vec2,
-        width: number,
-        stroke_style: StrokeParams,
-        draw_line: (lines: Vec2[]) => void,
-    ) {
-        const line_vec = end.sub(start);
-        const line_len = line_vec.magnitude;
-        const line_dir_vec = line_vec.normalize();
-
-        const dot_len = StrokeParams.dot_length(width);
-        const gap_len = StrokeParams.gap_length(width, stroke_style);
-        const dash_len = StrokeParams.dash_length(width, stroke_style);
-
-        // Generate line pattern
-        let line_pattern: number[] = [];
-        switch (stroke_style.stroke.type) {
-            case "dash":
-                line_pattern = [dash_len, gap_len];
-                break;
-            case "dot":
-                line_pattern = [dot_len, gap_len];
-                break;
-            case "dash_dot":
-                line_pattern = [dash_len, gap_len, dot_len, gap_len];
-                break;
-            case "dash_dot_dot":
-                line_pattern = [
-                    dash_len,
-                    gap_len,
-                    dot_len,
-                    gap_len,
-                    dot_len,
-                    gap_len,
-                ];
-                break;
-            default:
-                // Unreachable
-                return;
-        }
-
-        // Draw lines
-        let draw_len = 0.0;
-        let pattern_index = 0;
-        while (draw_len < line_len) {
-            const pattern = line_pattern[pattern_index]!;
-
-            const segment_len = Math.min(pattern, line_len - draw_len);
-
-            if (pattern_index % 2 === 0 && segment_len > 0) {
-                const seg_start = start.add(line_dir_vec.multiply(draw_len));
-                const seg_end = seg_start.add(
-                    line_dir_vec.multiply(segment_len),
-                );
-
-                draw_line([seg_start, seg_end]);
+        for (let i = 1; i < lines.length; i++) {
+            const from = lines[i - 1]!;
+            const side = lines[i]!.sub(from);
+            const length = side.magnitude;
+            if (length == 0) {
+                continue;
             }
-
-            draw_len += segment_len;
-            pattern_index = (pattern_index + 1) % line_pattern.length;
+            const along = (t: number) => from.add(side.multiply(t / length));
+            let at = 0;
+            for (let k = 0; at < length; k = (k + 1) % pattern.length) {
+                const to = Math.min(at + pattern[k]!, length);
+                // Even entries are drawn, odd ones are gaps.
+                if (k % 2 == 0) {
+                    draw_line([along(at), along(to)]);
+                }
+                at = to;
+            }
         }
     }
 
-    /** [1, 2, 3, 4, 5] -> [(1, 2), (2, 3), (3, 4), (4, 5), ...] */
-    private static *windowed2_iter<T>(
-        items: T[],
-    ): Generator<[T, T | undefined]> {
-        for (let i = 0; i < items.length - 1; i++) {
-            yield [items[i]!, items[i + 1]!];
+    /** The drawn and skipped lengths a patterned stroke repeats; null when it is solid. */
+    private static pattern(
+        width: number,
+        style: StrokeParams,
+    ): number[] | null {
+        const dash = StrokeParams.dash_length(width, style);
+        const gap = StrokeParams.gap_length(width, style);
+        const dot = StrokeParams.dot_length(width);
+        switch (style.stroke.type) {
+            case "dash":
+                return [dash, gap];
+            case "dot":
+                return [dot, gap];
+            case "dash_dot":
+                return [dash, gap, dot, gap];
+            case "dash_dot_dot":
+                return [dash, gap, dot, gap, dot, gap];
+            default:
+                return null;
         }
     }
 }

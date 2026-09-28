@@ -1034,11 +1034,10 @@ export class Footprint implements HasUniqueID {
      */
     get bbox() {
         if (!this.#bbox) {
-            // Based on FOOTPRINT::GetBoundingBox, excludes text items.
-
-            // start with a small bbox centered on the footprint's position,
-            // so that even if there aren't any items there's still *some*
-            // footprint.
+            // A 0.5 mm square round the footprint's position, grown by its
+            // drawings (not its text), so an empty footprint still has *some*
+            // box; KiCad 9 (pcbnew, text excluded) starts from the same
+            // square: x 9.75 to 10.25 at (10, 10), 9.75 to 13 with a line to 13.
             let bbox = new BBox(
                 this.at.position.x - 0.25,
                 this.at.position.y - 0.25,
@@ -1151,8 +1150,8 @@ class GraphicItem implements HasUniqueID, HasStrokeParams {
         // get plot_cfg from pcb
         const plot_cfg = pcb?.setup?.pcbplotparams;
 
-        // dashed_line_gap_ratio = 3, dashed_line_dash_ratio = 12
-        // is the default values from KiCad
+        // Without plot params, the 12:3 dash:gap ratios kicad-cli 9's board
+        // SVG draws dashes at (measured at widths 0.1 to 1 mm).
         return {
             stroke: this.stroke,
             dashed_line_gap_ratio: plot_cfg?.dashed_line_gap_ratio ?? 3,
@@ -1300,30 +1299,44 @@ export class Arc extends GraphicItem {
             P.item("stroke", Stroke),
         );
 
-        // Handle old format.
-        // See LEGACY_ARC_FORMATTING and EDA_SHAPE::SetArcAngleAndEnd
+        // The pre-6.0 form: (start) is the centre, (end) a point on the arc
+        // and (angle) the sweep from that point in degrees, clockwise as
+        // drawn when positive. A sweep past a whole turn comes back by whole
+        // turns to within +-360, 0 is a whole circle, and a negative sweep is
+        // the same arc taken from its far end. Measured on KiCad 9's load
+        // (pcbnew) of a version 20171130 board: gr_arc sweeps from -720 to
+        // 1080.5 (0, 0.001, 30.5, 359, 360, 400, ...) and fp_arc sweeps.
         if (parsed["angle"] !== undefined) {
-            const angle = Angle.from_degrees(parsed["angle"]).normalize720();
-            const center = parsed["start"];
-            let start = parsed["end"];
-
-            let end = angle.negative().rotate_point(start, center);
-
-            if (angle.degrees < 0) {
-                [start, end] = [end, start];
+            let sweep: number = parsed["angle"];
+            while (Math.abs(sweep) > 360) {
+                sweep -= Math.sign(sweep) * 360;
             }
+            const center: Vec2 = parsed["start"];
+            const point: Vec2 = parsed["end"];
+            // Turn `p` round the centre by `by` degrees, clockwise as drawn.
+            const turn = (by: number, p: Vec2) => {
+                if (by % 360 == 0) {
+                    return p;
+                }
+                const a = Angle.deg_to_rad(by);
+                const [c, s] = [Math.cos(a), Math.sin(a)];
+                const d = p.sub(center);
+                return center.add(
+                    new Vec2(d.x * c - d.y * s, d.x * s + d.y * c),
+                );
+            };
+            const far = turn(sweep, point);
+            const [from, to] = sweep < 0 ? [far, point] : [point, far];
 
             this.#arc = MathArc.from_center_start_end(
                 center,
-                start,
-                end,
+                from,
+                to,
                 parsed["width"],
             );
-
-            parsed["start"] = this.#arc.start_point;
-            parsed["mid"] = this.#arc.mid_point;
-            parsed["end"] = this.#arc.end_point;
-
+            parsed["start"] = from;
+            parsed["mid"] = turn((Math.abs(sweep) || 360) / 2, from);
+            parsed["end"] = to;
             delete parsed["angle"];
         } else {
             this.#arc = MathArc.from_three_points(
@@ -1429,11 +1442,11 @@ export class Poly extends GraphicItem {
 
         this.width ??= this.stroke?.width || 0;
 
-        // Convert all PolyArc to Vec2
-        // The `arc` node in pts is undocumented in the following link:
-        // https://dev-docs.kicad.org/en/file-formats/sexpr-intro/index.html#_footprint_polygon
-        // But it is used in the kicad code, it just converts the arc to a polyline
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/libs/kimath/src/geometry/shape_line_chain.cpp#L1613
+        // An (arc (start) (mid) (end)) among the pts (not in the file-format
+        // docs) is drawn as a run of short chords from start to end. KiCad 9
+        // does the same, keeping the chords within about 0.001 mm of the
+        // circle (its plot of a 5 mm radius half circle has 80 chords, of a
+        // 20 mm one 158); here they come from Arc.to_polyline's fixed step.
         this.#polyline_pts = this.pts.flatMap((pt) => {
             if (pt instanceof Vec2) {
                 return [pt];

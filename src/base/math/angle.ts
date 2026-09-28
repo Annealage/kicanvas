@@ -124,22 +124,6 @@ export class Angle {
     }
 
     /**
-     * @returns a new Angle constrained to -360 to +360 degrees.
-     */
-    normalize720() {
-        let deg = Angle.round(this.degrees);
-
-        while (deg < -360) {
-            deg += 360;
-        }
-        while (deg >= 360) {
-            deg -= 360;
-        }
-
-        return Angle.from_degrees(deg);
-    }
-
-    /**
      * @returns a new Angle that's reflected in the other direction, for
      * example, 90 degrees ends up being -90 or 270 degrees (when normalized).
      */

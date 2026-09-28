@@ -391,8 +391,6 @@ export class EmbeddedFile {
     }
 
     async decompress_file(): Promise<File | undefined> {
-        // see also:
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/embedded_files.cpp#L253
         if (!this.data) {
             // need be found in the board file
             return undefined;
@@ -410,27 +408,28 @@ export class StrokeParams {
     dashed_line_gap_ratio: number;
     dashed_line_dash_ratio: number;
 
-    /** ISO 128-2 line correction factor */
-    private static line_correction = 1.0;
+    // Lengths of a patterned stroke's pieces, `line` (the stroke width) wide,
+    // as drawn along the centreline. Each piece is drawn with round caps, half
+    // a width past each end, so a dash is drawn a width shorter than its ratio
+    // and a gap a width longer, neither under one width, and a dot is a fifth
+    // of a width. Measured from kicad-cli 9's SVGs: the schematic's
+    // stroke-dasharray at dash/gap ratios 0.5/-2, 1/0, 1.5/0.5, 2/-0.5, 3/-1,
+    // 8/5, 12/3 and 20/1 (widths 0.2 and 0.5 mm), and the board's dashes at
+    // 12/3 (widths 0.1 to 1 mm).
 
     /** Calculate the length of a dot in a dashed line. */
     static dot_length(line: number): number {
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/render_settings.cpp#L73
-        return Math.max(1.0 - StrokeParams.line_correction, 0.2) * line;
+        return line / 5;
     }
 
     /** Calculate the length of a gap in a dashed line. */
     static gap_length(line: number, stroke: StrokeParams): number {
-        const gap_ratio = stroke.dashed_line_gap_ratio;
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/render_settings.cpp#L81
-        return Math.max(gap_ratio + StrokeParams.line_correction, 1.0) * line;
+        return line * Math.max(stroke.dashed_line_gap_ratio + 1, 1);
     }
 
     /** Calculate the length of a dash in a dashed line. */
     static dash_length(line: number, stroke: StrokeParams): number {
-        const dash_ratio = stroke.dashed_line_dash_ratio;
-        // https://gitlab.com/kicad/code/kicad/-/blob/master/common/render_settings.cpp#L67
-        return Math.max(dash_ratio - StrokeParams.line_correction, 1.0) * line;
+        return line * Math.max(stroke.dashed_line_dash_ratio - 1, 1);
     }
 
     /** Solid line, gap: 3, dash: 12. */
