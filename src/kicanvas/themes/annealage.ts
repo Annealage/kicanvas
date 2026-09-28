@@ -10,20 +10,21 @@ import type { Theme } from "../../kicad/theme";
 /**
  * Annealage: a dark theme matching Loom's page (near-black steel background,
  * steel grey chrome). KiCad's layer semantics are kept: front copper is warm
- * (ember copper), back copper cool (quench blue), inner copper muted so the
- * outer layers read first, silkscreen near-white, zones slightly translucent
- * so tracks and the layers beneath show through, vias light steel so they
- * stand out against pours.
+ * (ember copper), back copper cool (quench blue), inner copper in distinct
+ * saturated hues, silkscreen near-white. Copper is saturated and zones faint
+ * (zone_opacity 0.22) so tracks and pads stand out from the pours, and a stack
+ * of full-board pours on several layers stays dark rather than blending into
+ * a grey-brown; vias light steel so they stand out against pours.
  */
 
-// Muted inner copper colours, cycled for boards with many inner layers.
+// Inner copper colours, cycled for boards with many inner layers.
 const inner = [
-    "rgb(118, 158, 108)", // sage
-    "rgb(150, 122, 172)", // mauve
-    "rgb(92, 150, 150)", // teal
-    "rgb(176, 156, 98)", // straw
-    "rgb(170, 110, 120)", // rose
-    "rgb(110, 126, 170)", // slate blue
+    "rgb(96, 204, 96)", // green
+    "rgb(186, 112, 240)", // violet
+    "rgb(60, 200, 200)", // teal
+    "rgb(232, 200, 60)", // straw
+    "rgb(240, 90, 120)", // rose
+    "rgb(112, 132, 255)", // periwinkle
 ].map((c) => Color.from_css(c));
 
 function inner_copper(n: number) {
@@ -45,8 +46,8 @@ const theme: Theme = {
         background: Color.from_css("rgb(20, 23, 26)"),
         cmts_user: Color.from_css("rgb(110, 150, 220)"),
         copper: {
-            f: Color.from_css("rgb(226, 120, 58)"),
-            b: Color.from_css("rgb(72, 146, 212)"),
+            f: Color.from_css("rgb(250, 112, 36)"),
+            b: Color.from_css("rgb(56, 148, 255)"),
             in1: inner_copper(1),
             in2: inner_copper(2),
             in3: inner_copper(3),
@@ -115,7 +116,7 @@ const theme: Theme = {
         via_micro: Color.from_css("rgb(90, 170, 180)"),
         via_through: Color.from_css("rgb(214, 218, 224)"),
         worksheet: Color.from_css("rgb(107, 114, 128)"),
-        zone_opacity: 0.45,
+        zone_opacity: 0.22,
     },
     schematic: {
         anchor: Color.from_css("rgb(230, 195, 106)"),
