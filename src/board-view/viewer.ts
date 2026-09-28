@@ -44,6 +44,11 @@ const FILL_ALPHA = 0.22;
 const HIDDEN_LAYER_ALPHA = 0.35;
 // Everything but the selected net is drawn at this alpha.
 const NET_DIM_ALPHA = 0.3;
+// The zoom-dependent part of a highlight (strokes, and the on-screen minimum
+// sizes) is repainted when the zoom has changed by more than this factor
+// since it was painted, not on every wheel step: a large highlight (a ground
+// island with its pours) costs a few hundred ms to tessellate.
+const HIGHLIGHT_ZOOM_STEP = 1.25;
 
 /**
  * BoardViewer driven by BoardView.
@@ -67,6 +72,10 @@ export class FacadeViewer extends BoardViewer {
     #last_view = "";
     #shapes: Shape[] = [];
     #colour = Color.white;
+    // Polygon and box fills, which don't depend on the zoom, painted when
+    // the shapes or the layer visibility change; then the zoom-dependent
+    // circle fills and all strokes, painted at #highlight_zoom.
+    #highlight_fills: RenderLayer[] = [];
     #highlight: RenderLayer[] = [];
     #highlight_zoom = 0;
     #net_layers: { layer: ViewLayer; graphics: RenderLayer }[] = [];
@@ -164,16 +173,21 @@ export class FacadeViewer extends BoardViewer {
         this.invalidate_highlight();
     }
 
-    /** Repaint the highlight on the next frame (zoom or visibility changed). */
+    /** Repaint the highlight on the next frame (the shapes or visibility changed). */
     invalidate_highlight() {
+        this.#clear_highlight_layers();
         this.#highlight_zoom = 0;
         this.draw();
     }
 
     protected override on_draw() {
         const zoom = this.viewport.camera.zoom;
-        if (this.#highlight_zoom != zoom) {
-            this.#highlight_zoom = zoom;
+        const step = zoom / this.#highlight_zoom;
+        if (
+            !this.#highlight_zoom ||
+            step > HIGHLIGHT_ZOOM_STEP ||
+            step < 1 / HIGHLIGHT_ZOOM_STEP
+        ) {
             this.#paint_highlight(zoom);
         }
 
@@ -210,7 +224,8 @@ export class FacadeViewer extends BoardViewer {
             }
         }
 
-        if (!this.#highlight.length) {
+        const layers = [...this.#highlight_fills, ...this.#highlight];
+        if (!layers.length) {
             return;
         }
         // Start the highlight over everything with a fresh depth buffer.
@@ -218,26 +233,31 @@ export class FacadeViewer extends BoardViewer {
         // depth-rejected where it overlaps its own fill.
         const gl = (this.renderer as WebGL2Renderer).gl!;
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.#highlight.forEach((layer, i) =>
-            layer.render(matrix, 0.5 + i * 0.1),
-        );
+        layers.forEach((layer, i) => layer.render(matrix, 0.5 + i * 0.1));
     }
 
     #clear_highlight_layers() {
-        for (const layer of this.#highlight) {
+        for (const layer of [...this.#highlight_fills, ...this.#highlight]) {
             layer.dispose();
         }
+        this.#highlight_fills = [];
         this.#highlight = [];
     }
 
     #paint_highlight(zoom: number) {
-        this.#clear_highlight_layers();
+        for (const layer of this.#highlight) {
+            layer.dispose();
+        }
+        this.#highlight = [];
+        this.#highlight_zoom = zoom;
         if (!this.#shapes.length) {
             return;
         }
 
+        const paint_fills = !this.#highlight_fills.length;
         const px = 1 / zoom;
         const stroke_w = STROKE_PX * px;
+        const fixed_fills: (() => void)[] = [];
         const fills: (() => void)[] = [];
         const strokes: (() => void)[] = [];
 
@@ -301,8 +321,8 @@ export class FacadeViewer extends BoardViewer {
                         break;
                     }
                     const closed = [...pts, pts[0]!];
-                    if (pts.length > 2) {
-                        fills.push(() =>
+                    if (pts.length > 2 && paint_fills) {
+                        fixed_fills.push(() =>
                             this.renderer.polygon(new Polygon(pts, fill)),
                         );
                     }
@@ -316,6 +336,13 @@ export class FacadeViewer extends BoardViewer {
             }
         }
 
+        if (paint_fills) {
+            this.renderer.start_layer(":Highlight:Area");
+            for (const draw of fixed_fills) {
+                draw();
+            }
+            this.#highlight_fills.push(this.renderer.end_layer());
+        }
         for (const [name, paint] of [
             [":Highlight:Fill", fills],
             [":Highlight:Stroke", strokes],
