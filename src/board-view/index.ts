@@ -91,7 +91,7 @@ export interface BoardViewOptions {
     theme?: string | Theme | BoardTheme;
 }
 
-/** KiCanvas's themes by name ("annealage", "kicad", "witchhazel"). */
+/** KiCanvas's themes by name ("annealage", "annealage-light", "kicad", "witchhazel"). */
 export const THEMES: Record<string, Theme> = Object.fromEntries(
     themes.list().map((t) => [t.name, t]),
 );
@@ -472,6 +472,20 @@ export class BoardView {
 
     get flipped(): boolean {
         return this.#want_flipped;
+    }
+
+    /**
+     * Repaint in another theme (a name from THEMES, a Theme or a board
+     * theme), as a reload does: camera, layer visibility, opacity, flip and
+     * selection are kept. `layers()` reports the new colours afterwards.
+     */
+    setTheme(theme: BoardViewOptions["theme"]) {
+        const viewer = this.#viewer;
+        viewer.theme = resolve_theme(theme);
+        if (this.#board && viewer.viewport) {
+            viewer.paint();
+            viewer.draw();
+        }
     }
 
     worldToScreen([x, y]: XY): XY {

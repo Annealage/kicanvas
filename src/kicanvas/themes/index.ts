@@ -8,8 +8,9 @@ import { type Theme } from "../../kicad";
 import witch_hazel from "./witch-hazel";
 import kicad_default from "./kicad-default";
 import annealage from "./annealage";
+import annealage_light from "./annealage-light";
 
-const themes = [witch_hazel, kicad_default, annealage];
+const themes = [witch_hazel, kicad_default, annealage, annealage_light];
 const themes_by_name = new Map(
     themes.map((v) => {
         return [v.name, v];

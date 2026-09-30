@@ -168,6 +168,29 @@ suite("board-view.BoardView", function () {
         assert.deepEqual(selects.at(-1), null);
     });
 
+    test("setTheme repaints in the new colours and keeps the view", function () {
+        view.setLayerVisible("F.SilkS", false);
+        view.zoomTo([0, 0, 10, 10]);
+        view.flip(true);
+        view.select({ ref: "R1" });
+        const before = view.worldToScreen([5, 5]);
+        const colour = (name: string) =>
+            view.layers().find((l) => l.name == name)!.colour;
+        const dark = colour("F.Cu");
+
+        view.setTheme("annealage-light");
+
+        assert.equal(colour("F.Cu"), "#d2540e");
+        assert.notEqual(colour("F.Cu"), dark);
+        assert.deepEqual(view.worldToScreen([5, 5]), before);
+        assert.isTrue(view.flipped);
+        assert.isFalse(view.layers().find((l) => l.name == "F.SilkS")!.visible);
+        assert.deepEqual(view.selection, { kind: "footprint", ref: "R1" });
+
+        view.setTheme("annealage");
+        assert.equal(colour("F.Cu"), dark);
+    });
+
     test("presets show one side and the outline", function () {
         view.preset("bottom");
         const visible = view
