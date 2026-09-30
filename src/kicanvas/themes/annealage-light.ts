@@ -11,10 +11,11 @@ import kicad_default from "./kicad-default";
 /**
  * Annealage light: the board on the Workbench light scheme's view colour
  * (#FBFBFB). The same layer semantics as `annealage` (front copper warm, back
- * copper cool, inner copper in distinct hues, faint zones) with every colour
- * deepened to hold at least 3:1 contrast against the light background, and
- * silkscreen, fab and courtyard drawn dark, since white silk vanishes on a
- * light view. Pad labels stay white over the saturated pads. The schematic
+ * copper cool, inner copper in distinct hues) with every colour deepened to
+ * hold at least 3:1 contrast against the light background, and silkscreen,
+ * fab and courtyard drawn dark, since white silk vanishes on a light view.
+ * Zones are fainter than the dark theme's (0.12): on a light view the full
+ * pours of a four-layer board stack into a flat grey at 0.22. Pad labels stay white over the saturated pads. The schematic
  * half is KiCad's own light palette.
  */
 
@@ -119,7 +120,7 @@ const theme: Theme = {
         via_micro: Color.from_css("rgb(20, 120, 130)"),
         via_through: Color.from_css("rgb(96, 102, 110)"),
         worksheet: Color.from_css("rgb(150, 155, 162)"),
-        zone_opacity: 0.22,
+        zone_opacity: 0.12,
     },
     schematic: kicad_default.schematic,
 };
