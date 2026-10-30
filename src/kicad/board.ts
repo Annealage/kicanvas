@@ -1529,7 +1529,7 @@ export class FpRect extends Rect {
 export class TextRenderCache {
     text: string;
     angle: 0;
-    polygons: Poly[];
+    polygons: Poly[] = [];
 
     constructor(expr: Parseable) {
         Object.assign(

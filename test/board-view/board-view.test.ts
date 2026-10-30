@@ -83,6 +83,32 @@ suite("board-view.BoardView", function () {
         assert.closeTo(wy, 7.25, 1e-4);
     });
 
+    test("empty text render caches keep the board interactive", async function () {
+        const source = board_src
+            .replace(
+                '(net 0 "")',
+                `(gr_text "BOARD" (at 5 5) (layer "F.SilkS")
+                    (effects (font (size 1 1) (thickness 0.15)))
+                    (render_cache "BOARD" 0))
+                (net 0 "")`,
+            )
+            .replace(
+                "(attr smd)",
+                `(attr smd)
+                 (fp_text user "R1" (at 0 -2 0) (layer "F.SilkS")
+                    (effects (font (size 1 1) (thickness 0.15)))
+                    (render_cache "R1" 0))`,
+            );
+        await view.load(source, "empty-text-cache.kicad_pcb");
+        click_at(9.2, 10);
+        assert.deepEqual(clicks[0]!.items[0], {
+            kind: "pad",
+            ref: "R1",
+            pad: "1",
+            net: "GND",
+        });
+    });
+
     test("a click on a pad lists it first and selects its footprint", function () {
         click_at(9.2, 10);
         assert.deepEqual(clicks[0]!.items[0], {

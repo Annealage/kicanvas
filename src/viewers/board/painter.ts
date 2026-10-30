@@ -931,7 +931,7 @@ class GrTextPainter extends BoardItemPainter {
             return;
         }
 
-        if (t.render_cache) {
+        if (t.render_cache?.polygons.length) {
             for (const poly of t.render_cache.polygons) {
                 this.view_painter.paint_item(layer, poly);
             }
@@ -978,7 +978,7 @@ class FpTextPainter extends BoardItemPainter {
             return;
         }
 
-        if (t.render_cache) {
+        if (t.render_cache?.polygons.length) {
             this.gfx.state.push();
             this.gfx.state.matrix = Matrix3.identity();
             for (const poly of t.render_cache.polygons) {
