@@ -9,14 +9,19 @@ import type { Theme } from "../../kicad/theme";
 import kicad_default from "./kicad-default";
 
 /**
- * Annealage light: the board on the Workbench light scheme's view colour
- * (#FBFBFB). The same layer semantics as `annealage` (front copper warm, back
- * copper cool, inner copper in distinct hues) with every colour deepened to
- * hold at least 3:1 contrast against the light background, and silkscreen,
- * fab and courtyard drawn dark, since white silk vanishes on a light view.
- * Zones are fainter than the dark theme's (0.12): on a light view the full
- * pours of a four-layer board stack into a flat grey at 0.22. Pad labels stay white over the saturated pads. The schematic
- * half is KiCad's own light palette.
+ * Annealage light: the board on the style library's light `--well`
+ * (#F0F1F0), so the WebGL canvas meets its surround without a seam. The same
+ * layer semantics as `annealage` (front copper warm, back copper cool, inner
+ * copper in distinct hues) with every colour deepened to hold at least 3:1
+ * contrast against the light background, and silkscreen, fab and courtyard
+ * drawn dark, since white silk vanishes on a light view. Zones are fainter
+ * than the dark theme's (0.12): on a light view the full pours of a four-layer
+ * board stack into a flat grey at 0.22. Pad labels stay white over the
+ * saturated pads. The schematic half is KiCad's own light palette.
+ *
+ * Masks and paste are translucent by design and are exempt from the 3:1 rule.
+ * Values commented with a `--token` name are copies of that token in the style
+ * library's tokens.css (light scheme). Retune them if tokens.css changes.
  */
 
 // Inner copper colours, cycled for boards with many inner layers.
@@ -80,7 +85,7 @@ const theme: Theme = {
         b_mask: Color.from_css("rgba(40, 100, 170, 0.22)"),
         b_paste: Color.from_css("rgba(90, 110, 140, 0.4)"),
         b_silks: Color.from_css("rgb(44, 70, 110)"),
-        background: Color.from_css("rgb(251, 251, 251)"),
+        background: Color.from_css("rgb(240, 241, 240)"), // --well
         cmts_user: Color.from_css("rgb(40, 84, 170)"),
         copper,
         cursor: Color.from_css("rgb(20, 23, 26)"),
@@ -97,9 +102,9 @@ const theme: Theme = {
         f_mask: Color.from_css("rgba(190, 80, 40, 0.22)"),
         f_paste: Color.from_css("rgba(110, 110, 130, 0.4)"),
         f_silks: Color.from_css("rgb(28, 31, 36)"),
-        footprint_text_invisible: Color.from_css("rgb(150, 155, 162)"),
-        grid: Color.from_css("rgb(222, 224, 228)"),
-        grid_axes: Color.from_css("rgb(150, 155, 162)"),
+        footprint_text_invisible: Color.from_css("rgb(130, 136, 143)"),
+        grid: Color.from_css("rgb(210, 214, 213)"), // --mv-grid-2
+        grid_axes: Color.from_css("rgb(201, 205, 204)"), // --rule-strong
         margin: Color.from_css("rgb(160, 60, 130)"),
         no_connect: Color.from_css("rgb(30, 90, 200)"),
         pad_plated_hole: Color.from_css("rgb(150, 116, 30)"),
@@ -116,10 +121,10 @@ const theme: Theme = {
         user_8: Color.from_css("rgb(170, 70, 90)"),
         user_9: Color.from_css("rgb(100, 120, 40)"),
         via_blind_buried: Color.from_css("rgb(150, 110, 30)"),
-        via_hole: Color.from_css("rgb(244, 245, 246)"),
+        via_hole: Color.from_css("rgb(240, 241, 240)"), // --well: the hole shows the canvas
         via_micro: Color.from_css("rgb(20, 120, 130)"),
         via_through: Color.from_css("rgb(96, 102, 110)"),
-        worksheet: Color.from_css("rgb(150, 155, 162)"),
+        worksheet: Color.from_css("rgb(102, 109, 115)"), // --ink-3
         zone_opacity: 0.12,
     },
     schematic: kicad_default.schematic,

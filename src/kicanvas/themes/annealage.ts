@@ -8,13 +8,20 @@ import { Color } from "../../base/color";
 import type { Theme } from "../../kicad/theme";
 
 /**
- * Annealage: a dark theme matching Loom's page (near-black steel background,
- * steel grey chrome). KiCad's layer semantics are kept: front copper is warm
- * (ember copper), back copper cool (quench blue), inner copper in distinct
- * saturated hues, silkscreen near-white. Copper is saturated and zones faint
- * (zone_opacity 0.22) so tracks and pads stand out from the pours, and a stack
- * of full-board pours on several layers stays dark rather than blending into
- * a grey-brown; vias light steel so they stand out against pours.
+ * Annealage: the dark board theme, drawn on the style library's dark `--well`
+ * so the WebGL canvas meets its surround without a seam. KiCad's layer
+ * semantics are kept: front copper is warm (ember copper), back copper cool
+ * (quench blue), inner copper in distinct saturated hues, silkscreen
+ * near-white. Copper is saturated and zones faint (zone_opacity 0.22) so
+ * tracks and pads stand out from the pours, and a stack of full-board pours on
+ * several layers stays dark rather than blending into a grey-brown; vias light
+ * steel so they stand out against pours.
+ *
+ * Every opaque layer colour holds at least 3:1 against the background; masks
+ * and paste are translucent by design and are exempt.
+ *
+ * Values commented with a `--token` name are copies of that token in the
+ * style library's tokens.css (dark scheme). Retune them if tokens.css changes.
  */
 
 // Inner copper colours, cycled for boards with many inner layers.
@@ -37,13 +44,13 @@ const theme: Theme = {
     board: {
         anchor: Color.from_css("rgb(230, 195, 106)"),
         aux_items: Color.from_css("rgb(220, 220, 220)"),
-        b_adhes: Color.from_css("rgb(70, 70, 150)"),
+        b_adhes: Color.from_css("rgb(100, 100, 200)"),
         b_crtyd: Color.from_css("rgb(90, 200, 214)"),
         b_fab: Color.from_css("rgb(120, 136, 160)"),
         b_mask: Color.from_css("rgba(80, 140, 190, 0.35)"),
         b_paste: Color.from_css("rgba(150, 175, 200, 0.55)"),
         b_silks: Color.from_css("rgb(190, 200, 214)"),
-        background: Color.from_css("rgb(20, 23, 26)"),
+        background: Color.from_css("rgb(14, 16, 18)"), // --well
         cmts_user: Color.from_css("rgb(110, 150, 220)"),
         copper: {
             f: Color.from_css("rgb(250, 112, 36)"),
@@ -79,7 +86,7 @@ const theme: Theme = {
             in29: inner_copper(29),
             in30: inner_copper(30),
         },
-        cursor: Color.from_css("rgb(230, 232, 236)"),
+        cursor: Color.from_css("rgb(230, 237, 243)"), // --ink
         drc_error: Color.from_css("rgba(240, 96, 90, 0.8)"),
         drc_exclusion: Color.from_css("rgba(220, 220, 220, 0.8)"),
         drc_warning: Color.from_css("rgba(217, 184, 74, 0.8)"),
@@ -93,9 +100,9 @@ const theme: Theme = {
         f_mask: Color.from_css("rgba(214, 120, 90, 0.35)"),
         f_paste: Color.from_css("rgba(200, 200, 210, 0.55)"),
         f_silks: Color.from_css("rgb(236, 234, 226)"),
-        footprint_text_invisible: Color.from_css("rgb(90, 96, 104)"),
-        grid: Color.from_css("rgb(58, 63, 69)"),
-        grid_axes: Color.from_css("rgb(107, 114, 128)"),
+        footprint_text_invisible: Color.from_css("rgb(96, 102, 112)"),
+        grid: Color.from_css("rgb(37, 42, 46)"), // --mv-grid-2
+        grid_axes: Color.from_css("rgb(66, 73, 80)"), // --rule-strong
         margin: Color.from_css("rgb(190, 120, 170)"),
         no_connect: Color.from_css("rgb(90, 150, 230)"),
         pad_plated_hole: Color.from_css("rgb(200, 170, 90)"),
@@ -112,7 +119,7 @@ const theme: Theme = {
         user_8: Color.from_css("rgb(200, 140, 150)"),
         user_9: Color.from_css("rgb(170, 190, 120)"),
         via_blind_buried: Color.from_css("rgb(190, 160, 90)"),
-        via_hole: Color.from_css("rgb(28, 31, 35)"),
+        via_hole: Color.from_css("rgb(14, 16, 18)"), // --well: the hole shows the canvas
         via_micro: Color.from_css("rgb(90, 170, 180)"),
         via_through: Color.from_css("rgb(214, 218, 224)"),
         worksheet: Color.from_css("rgb(107, 114, 128)"),
@@ -121,18 +128,18 @@ const theme: Theme = {
     schematic: {
         anchor: Color.from_css("rgb(230, 195, 106)"),
         aux_items: Color.from_css("rgb(220, 220, 220)"),
-        background: Color.from_css("rgb(20, 23, 26)"),
+        background: Color.from_css("rgb(14, 16, 18)"), // --well
         brightened: Color.from_css("rgb(255, 180, 120)"),
         bus: Color.from_css("rgb(80, 130, 210)"),
         bus_junction: Color.from_css("rgb(80, 130, 210)"),
         component_body: Color.from_css("rgb(34, 38, 44)"),
         component_outline: Color.from_css("rgb(226, 120, 58)"),
-        cursor: Color.from_css("rgb(230, 232, 236)"),
+        cursor: Color.from_css("rgb(230, 237, 243)"), // --ink
         erc_error: Color.from_css("rgba(240, 96, 90, 0.8)"),
         erc_warning: Color.from_css("rgba(217, 184, 74, 0.8)"),
         fields: Color.from_css("rgb(170, 160, 200)"),
-        grid: Color.from_css("rgb(58, 63, 69)"),
-        grid_axes: Color.from_css("rgb(107, 114, 128)"),
+        grid: Color.from_css("rgb(37, 42, 46)"), // --mv-grid-2
+        grid_axes: Color.from_css("rgb(66, 73, 80)"), // --rule-strong
         hidden: Color.from_css("rgb(90, 96, 104)"),
         junction: Color.from_css("rgb(110, 170, 220)"),
         label_global: Color.from_css("rgb(230, 195, 106)"),
@@ -148,7 +155,7 @@ const theme: Theme = {
         rule_area: Color.from_css("rgb(200, 110, 160)"),
         shadow: Color.from_css("rgba(110, 170, 220, 0.6)"),
         sheet: Color.from_css("rgb(150, 122, 172)"),
-        sheet_background: Color.from_css("rgb(26, 30, 34)"),
+        sheet_background: Color.from_css("rgb(30, 34, 38)"), // --field
         sheet_fields: Color.from_css("rgb(170, 160, 200)"),
         sheet_filename: Color.from_css("rgb(150, 160, 175)"),
         sheet_label: Color.from_css("rgb(200, 150, 100)"),
