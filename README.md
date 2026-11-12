@@ -25,7 +25,7 @@ KiCanvas is developed by [Thea Flowers](https://thea.codes) with financial suppo
 This is Annealage's fork of KiCanvas (branch `annealage`), used by Annealage Loom. It adds:
 
 - `build/kicanvas-board.js` (source `src/board-view/`): the board viewer on a page's own `<canvas>`, without KiCanvas's UI elements or fonts. `new BoardView(canvas, { theme })`, then `load(text)`, per-layer visibility and presets, footprint and net selection, highlight shapes, fit and zoom, flip, board mm to canvas px conversion, and `select`/`click`/`pointer`/`view` events. The wheel zooms about the cursor and a drag pans. See the types in `src/board-view/index.ts`.
-- The "Annealage" theme (`src/kicanvas/themes/annealage.ts`), selectable in the embed like the others.
+- The "Annealage" and "Annealage light" themes (`src/kicanvas/themes/annealage.ts`, `annealage-light.ts`), selectable in the embed like the others. Their backgrounds are the style library's `--well` in each scheme (`#0E1012`, `#F0F1F0`), so the board canvas meets its surround without a seam; the grid, cursor and worksheet colours are copies of style tokens too, commented with the token name. They are compiled in, so retune them when `tokens.css` changes.
 - The embed's fonts (Nunito, and Material Symbols subset to the icons KiCanvas uses) bundled into `kicanvas.js` from `third_party/fonts/`, so it works offline and makes no Google Fonts request.
 - Fixes: zooming about the cursor in the embed, the WebGL renderer clearing to the theme's background, disposed render layers leaving the renderer's list, and silkscreen and courtyard drawn above their side's copper.
 
