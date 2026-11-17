@@ -506,6 +506,31 @@ export class BoardView {
         return [p.x, p.y];
     }
 
+    /**
+     * Visible items at a board-world point in millimetres, front-most first.
+     * Uses the same screen-space tolerance as a click without changing
+     * selection or emitting events. Returns an empty array before load.
+     */
+    itemsAt(x: number, y: number): PickItem[] {
+        const viewer = this.#viewer;
+        const board = this.#board;
+        if (!board || !viewer.viewport) {
+            return [];
+        }
+        const layers = viewer.layers;
+        return pick(
+            board,
+            new Vec2(x, y),
+            PICK_TOLERANCE_PX / viewer.viewport.camera.zoom,
+            {
+                layer: (name) => layers.by_name(name)?.visible ?? false,
+                pads: this.#group_visible.Pads,
+                vias: this.#group_visible.Vias,
+                zones: this.#group_visible.Zones,
+            },
+        );
+    }
+
     /** Subscribe; returns the unsubscribe function. */
     on<K extends keyof BoardViewEvents>(type: K, handler: Handler<K>) {
         this.#handlers[type].add(handler);
@@ -577,13 +602,7 @@ export class BoardView {
         }
         const camera = viewer.viewport.camera;
         const w = camera.screen_to_world(p);
-        const layers = viewer.layers;
-        const items = pick(board, w, PICK_TOLERANCE_PX / camera.zoom, {
-            layer: (name) => layers.by_name(name)?.visible ?? false,
-            pads: this.#group_visible.Pads,
-            vias: this.#group_visible.Vias,
-            zones: this.#group_visible.Zones,
-        });
+        const items = this.itemsAt(w.x, w.y);
 
         let prevented = false;
         this.#emit("click", {
